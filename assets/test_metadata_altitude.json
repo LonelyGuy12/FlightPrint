@@ -1,0 +1,9 @@
+{
+  "camera": {
+    "focal_length_mm": 24.0,
+    "sensor_width_mm": 36.0,
+    "image_width": 1920,
+    "image_height": 1080
+  },
+  "flight_altitude_m": 120.0
+}

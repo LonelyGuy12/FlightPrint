@@ -1,0 +1,1 @@
+"""FlightPrint Backend — FastAPI application."""
