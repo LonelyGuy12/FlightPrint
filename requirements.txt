@@ -17,8 +17,11 @@ python-multipart>=0.0.6
 pydantic>=2.5.0
 aiofiles>=23.2.0
 
-# AI / LLM
-openai>=1.6.0
+# AI (Amazon Bedrock)
+boto3>=1.34.0
+
+# Datasets (tools/midair_adapter.py)
+h5py>=3.9.0
 
 # Utilities
 tqdm>=4.66.0
