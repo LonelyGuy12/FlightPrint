@@ -1,32 +1,51 @@
-"""Stage 9: AI Scene Understanding Agent.
+"""Stage 9: Evidence-aware scene analysis.
 
-Analyzes the reconstructed scene to identify anomalies and regions of interest:
-- Damaged structures
-- Blocked roads
-- Unusual objects
-- Elevation anomalies
+Finds anomalies in the reconstruction and backs each one with evidence:
 
-Uses an LLM/vision API for scene description when available, with fallback
-to geometric heuristics.
+1. Geometric detection on the point cloud (elevation outliers, coverage gaps),
+   each with a signal strength in [0, 1].
+2. Evidence linking: every anomaly is projected into the posed video frames;
+   the frames that show it are recorded (index, timestamp, pixel) and the best
+   are saved as crops (see pipeline/evidence.py).
+3. Confidence scoring from the evidence: detector signal, number of supporting
+   frames, spread of viewing angles, and 3D point support.
+4. Optional visual check with Amazon Bedrock: the model looks at each
+   anomaly's evidence crops and says what is there (damage, obstruction,
+   unusual object or nothing), which adjusts the confidence.
+
+Output: anomaly_report.json (schema_version 2) plus evidence/ crops.
 """
 
+from __future__ import annotations
+
 import json
-import cv2
-import numpy as np
+import os
 from pathlib import Path
 
-from .utils.logging import get_logger, log_stage
-from .utils.io import PipelineContext
+import numpy as np
 
+from .evidence import attach_evidence
+from .utils.io import PipelineContext
+from .utils.logging import get_logger, log_stage
+
+SCHEMA_VERSION = 2
 
 DEFAULT_CONFIG = {
-    "use_llm": False,                # Set True + provide API key for LLM analysis
-    "llm_model": "gpt-4o",
-    "max_rendered_views": 6,         # Views to render for LLM analysis
-    "elevation_anomaly_std": 2.5,    # Std devs for elevation anomaly
-    "density_anomaly_quantile": 0.05, # Low-density regions
+    "elevation_anomaly_std": 2.5,     # std devs from mean elevation
+    "density_anomaly_quantile": 0.05,  # cell density below this share of the mean = gap
+    "density_grid_cells": 20,          # grid resolution along the longer side
     "min_anomaly_points": 10,
+    "max_supporting_frames": 8,
+    "max_crops_per_anomaly": 3,
+    # Visual check with Amazon Bedrock (off by default; needs AWS credentials)
+    "use_bedrock": False,
+    "bedrock_model_id": os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-pro-v1:0"),
+    "bedrock_region": os.environ.get("AWS_REGION", "us-east-1"),
+    "max_bedrock_anomalies": 10,        # cost cap: only the top-N anomalies are checked
+    "visual_weight": 0.25,
 }
+
+VISUAL_LABELS = ("damage", "obstruction", "unusual_object", "none")
 
 
 def _is_metric(ctx) -> bool:
@@ -34,293 +53,256 @@ def _is_metric(ctx) -> bool:
     return getattr(ctx, "scale_status", "relative_unscaled") != "relative_unscaled"
 
 
-def detect_elevation_anomalies(points: np.ndarray, colors: np.ndarray | None,
-                                config: dict,
-                                metric: bool = True) -> list[dict]:
-    """Find regions with unusual elevation (very high/low compared to surroundings).
+# ---------------------------------------------------------------- geometric detectors
 
-    When *metric* is False the descriptions use relative language (ratios)
-    instead of absolute metre values.
+def detect_elevation_anomalies(points: np.ndarray, colors: np.ndarray | None,
+                               config: dict, metric: bool = True) -> list[dict]:
+    """Regions much higher or lower than the scene's mean elevation.
+
+    signal_strength grows with how far past the threshold the region sits:
+    0.4 at the threshold, 1.0 at twice the threshold.
     """
     if len(points) < 50:
         return []
 
     z = points[:, 2]
-    z_mean = np.mean(z)
-    z_std = np.std(z)
-
+    z_mean, z_std = float(np.mean(z)), float(np.std(z))
     if z_std < 0.01:
         return []
 
+    k = config["elevation_anomaly_std"]
+    threshold = k * z_std
     anomalies = []
-    threshold = config["elevation_anomaly_std"] * z_std
 
-    # Find high points
-    high_mask = z > z_mean + threshold
-    if high_mask.sum() >= config["min_anomaly_points"]:
-        high_pts = points[high_mask]
-        centroid = high_pts.mean(axis=0)
-        delta = centroid[2] - z_mean
-        if metric:
-            desc = f"Elevated structure or object ({delta:.1f}m above average)"
-        else:
-            ratio = delta / z_std if z_std > 0 else 0
-            desc = f"Elevated structure or object (~{ratio:.1f}× std-dev above average elevation)"
+    for kind, mask, severity in (
+        ("elevation_high", z > z_mean + threshold, "medium"),
+        ("elevation_low", z < z_mean - threshold, "high"),
+    ):
+        n = int(mask.sum())
+        if n < config["min_anomaly_points"]:
+            continue
+        centroid = points[mask].mean(axis=0)
+        delta = abs(float(centroid[2]) - z_mean)
+        zscore = delta / z_std
+        where = "above" if kind == "elevation_high" else "below"
+        what = "Elevated structure or object" if kind == "elevation_high" else "Depression or damage"
+        desc = (f"{what} ({delta:.1f}m {where} average)" if metric
+                else f"{what} (~{zscore:.1f}× std-dev {where} average elevation)")
         anomalies.append({
-            "type": "elevation_high",
+            "type": kind,
             "description": desc,
             "position_enu": centroid.tolist(),
-            "num_points": int(high_mask.sum()),
-            "confidence": min(0.95, 0.5 + 0.05 * high_mask.sum()),
-            "severity": "medium",
+            "num_points": n,
+            "signal_strength": round(float(np.clip(0.4 + 0.6 * (zscore - k) / k, 0.0, 1.0)), 3),
+            "severity": severity,
+            "source": "geometry",
         })
-
-    # Find low points (potential depressions/damage)
-    low_mask = z < z_mean - threshold
-    if low_mask.sum() >= config["min_anomaly_points"]:
-        low_pts = points[low_mask]
-        centroid = low_pts.mean(axis=0)
-        delta = z_mean - centroid[2]
-        if metric:
-            desc = f"Depression or damage ({delta:.1f}m below average)"
-        else:
-            ratio = delta / z_std if z_std > 0 else 0
-            desc = f"Depression or damage (~{ratio:.1f}× std-dev below average elevation)"
-        anomalies.append({
-            "type": "elevation_low",
-            "description": desc,
-            "position_enu": centroid.tolist(),
-            "num_points": int(low_mask.sum()),
-            "confidence": min(0.95, 0.5 + 0.05 * low_mask.sum()),
-            "severity": "high",
-        })
-
     return anomalies
 
 
 def detect_density_anomalies(points: np.ndarray, config: dict) -> list[dict]:
-    """Find spatial regions with anomalous point density."""
+    """Sparse cells surrounded by dense coverage (occlusion, moving object or gap).
+
+    signal_strength = how empty the cell is compared with its neighbours.
+    """
     if len(points) < 100:
         return []
 
-    # Simple grid-based density
     xy = points[:, :2]
-    x_range = xy[:, 0].max() - xy[:, 0].min()
-    y_range = xy[:, 1].max() - xy[:, 1].min()
-
+    x_min, y_min = xy.min(axis=0)
+    x_range, y_range = xy.max(axis=0) - xy.min(axis=0)
     if x_range < 1 or y_range < 1:
         return []
 
-    grid_size = max(x_range, y_range) / 20
-    cols = max(1, int(x_range / grid_size) + 1)
-    rows = max(1, int(y_range / grid_size) + 1)
-
+    cell = max(x_range, y_range) / config["density_grid_cells"]
+    cols = max(1, int(x_range / cell) + 1)
+    rows = max(1, int(y_range / cell) + 1)
+    c_idx = np.minimum(((xy[:, 0] - x_min) / cell).astype(int), cols - 1)
+    r_idx = np.minimum(((xy[:, 1] - y_min) / cell).astype(int), rows - 1)
     density = np.zeros((rows, cols))
-    x_min, y_min = xy[:, 0].min(), xy[:, 1].min()
+    np.add.at(density, (r_idx, c_idx), 1)
 
-    for pt in xy:
-        c = min(int((pt[0] - x_min) / grid_size), cols - 1)
-        r = min(int((pt[1] - y_min) / grid_size), rows - 1)
-        density[r, c] += 1
+    occupied = density[density > 0]
+    if occupied.size == 0:
+        return []
+    mean_density = float(occupied.mean())
+    sparse_thresh = mean_density * config["density_anomaly_quantile"]
+    z_mean = float(points[:, 2].mean())
 
-    # Find very sparse regions surrounded by dense regions
     anomalies = []
-    mean_density = density[density > 0].mean() if (density > 0).any() else 0
-
-    if mean_density > 0:
-        sparse_thresh = mean_density * config["density_anomaly_quantile"]
-        for r in range(1, rows - 1):
-            for c in range(1, cols - 1):
-                neighbors = density[r-1:r+2, c-1:c+2]
-                if density[r, c] < sparse_thresh and neighbors.mean() > mean_density:
-                    center_x = x_min + (c + 0.5) * grid_size
-                    center_y = y_min + (r + 0.5) * grid_size
-                    center_z = points[:, 2].mean()
-
-                    anomalies.append({
-                        "type": "density_gap",
-                        "description": "Sparse region surrounded by dense coverage — possible occlusion, moving object, or structural gap",
-                        "position_enu": [float(center_x), float(center_y), float(center_z)],
-                        "confidence": 0.6,
-                        "severity": "low",
-                    })
-
+    for r in range(1, rows - 1):
+        for c in range(1, cols - 1):
+            nb = density[r - 1:r + 2, c - 1:c + 2]
+            nb_mean = (nb.sum() - density[r, c]) / 8.0
+            if density[r, c] < sparse_thresh and nb_mean > mean_density:
+                anomalies.append({
+                    "type": "density_gap",
+                    "description": "Sparse region surrounded by dense coverage: possible occlusion, "
+                                   "moving object, or structural gap",
+                    "position_enu": [float(x_min + (c + 0.5) * cell), float(y_min + (r + 0.5) * cell), z_mean],
+                    "num_points": int(density[r, c]),
+                    "signal_strength": round(float(np.clip(1.0 - density[r, c] / nb_mean, 0.0, 1.0)), 3),
+                    "severity": "low",
+                    "source": "geometry",
+                })
     return anomalies
 
 
-def render_views_for_llm(ctx: PipelineContext, n_views: int) -> list[Path]:
-    """Render a set of representative views from the reconstruction for LLM analysis."""
-    view_paths = []
-    views_dir = ctx.output_dir / "llm_views"
-    views_dir.mkdir(exist_ok=True)
+# ---------------------------------------------------------------- Bedrock visual check
 
-    n_frames = len(ctx.frame_paths)
-    step = max(1, n_frames // n_views)
-
-    for i in range(0, n_frames, step):
-        if len(view_paths) >= n_views:
-            break
-        src = ctx.frame_paths[i]
-        # Resize for API efficiency
-        img = cv2.imread(str(src))
-        if img is None:
-            continue
-        h, w = img.shape[:2]
-        if w > 1280:
-            scale = 1280 / w
-            img = cv2.resize(img, (1280, int(h * scale)))
-
-        dst = views_dir / f"view_{len(view_paths):02d}.jpg"
-        cv2.imwrite(str(dst), img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        view_paths.append(dst)
-
-    return view_paths
+VISUAL_PROMPT = (
+    "You are checking one finding from a drone-survey 3D reconstruction. "
+    "The images are crops from different video frames; the red ring marks the location of the finding. "
+    "Geometric detector says: {description}.\n"
+    "What is at the ringed location? Answer with JSON only:\n"
+    '{{"label": one of "damage", "obstruction", "unusual_object", "none", '
+    '"description": one short sentence on what you see, '
+    '"confidence": number from 0 to 1}}'
+)
 
 
-async def analyze_with_llm(view_paths: list[Path], anomalies: list[dict],
-                           config: dict) -> list[dict]:
-    """Use GPT-4o or similar to analyze rendered views and enrich anomalies."""
-    try:
-        import openai
-        import base64
-    except ImportError:
-        return anomalies
+def _bedrock_client(region: str):
+    import boto3
+    return boto3.client("bedrock-runtime", region_name=region)
 
-    try:
-        client = openai.OpenAI()
 
-        # Encode images
-        images = []
-        for path in view_paths[:4]:  # Limit for API cost
-            with open(path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            images.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-            })
+def assess_with_bedrock(anomaly: dict, config: dict, client=None) -> dict | None:
+    """Ask a Bedrock vision model what the evidence crops show. Returns the assessment or None."""
+    crops = [f["crop_path"] for f in anomaly.get("supporting_frames", []) if f.get("crop_path")]
+    if not crops:
+        return None
+    client = client or _bedrock_client(config["bedrock_region"])
 
-        messages = [
-            {"role": "system", "content": (
-                "You are an expert aerial/drone image analyst for FlightPrint. "
-                "Analyze these drone reconstruction views and identify:\n"
-                "1. Damaged structures or infrastructure\n"
-                "2. Blocked roads or paths\n"
-                "3. Unusual objects or changes\n"
-                "4. Areas of interest for further inspection\n\n"
-                "Output a JSON array of findings, each with: type, description, "
-                "severity (low/medium/high), confidence (0-1)."
-            )},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Analyze these drone reconstruction views:"},
-                *images,
-            ]},
-        ]
+    content = [{"text": VISUAL_PROMPT.format(description=anomaly.get("description", ""))}]
+    for p in crops:
+        content.append({"image": {"format": "jpeg", "source": {"bytes": Path(p).read_bytes()}}})
 
-        response = client.chat.completions.create(
-            model=config["llm_model"],
-            messages=messages,
-            max_tokens=1000,
-            response_format={"type": "json_object"},
-        )
+    response = client.converse(
+        modelId=config["bedrock_model_id"],
+        messages=[{"role": "user", "content": content}],
+        inferenceConfig={"maxTokens": 300, "temperature": 0},
+    )
+    text = "".join(part.get("text", "") for part in response["output"]["message"]["content"])
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    result = json.loads(text[start:end + 1])
 
-        result = json.loads(response.choices[0].message.content)
-        llm_anomalies = result.get("findings", result.get("anomalies", []))
+    label = result.get("label", "none")
+    if label not in VISUAL_LABELS:
+        label = "unusual_object"
+    return {
+        "label": label,
+        "description": str(result.get("description", ""))[:300],
+        "confidence": float(np.clip(float(result.get("confidence", 0.5)), 0.0, 1.0)),
+        "model": config["bedrock_model_id"],
+        "crops_checked": len(crops),
+    }
 
-        # Merge with geometric anomalies
-        for finding in llm_anomalies:
-            finding["source"] = "llm"
-            anomalies.append(finding)
 
-    except Exception as e:
-        pass  # LLM analysis is optional
+def apply_visual_assessment(anomaly: dict, assessment: dict, weight: float) -> dict:
+    """Blend the visual check into the confidence (in place).
 
-    return anomalies
+    A model that sees something supports the finding with its confidence c;
+    a model that sees nothing supports it with 1 - c.
+    """
+    c = assessment["confidence"]
+    support = c if assessment["label"] != "none" else 1.0 - c
+    anomaly["visual_assessment"] = assessment
+    anomaly["confidence_factors"]["visual"] = round(support, 3)
+    anomaly["confidence"] = round(float(np.clip((1 - weight) * anomaly["confidence"] + weight * support,
+                                                0.01, 0.99)), 3)
+    if assessment["label"] in ("damage", "obstruction") and c >= 0.6:
+        anomaly["severity"] = "high"
+    return anomaly
+
+
+# ---------------------------------------------------------------- stage entry point
+
+def _image_size(ctx: PipelineContext) -> tuple[int, int] | None:
+    if ctx.frame_paths:
+        import cv2
+        img = cv2.imread(str(ctx.frame_paths[0]))
+        if img is not None:
+            return img.shape[1], img.shape[0]
+    if ctx.camera_matrix is not None:
+        return int(round(2 * ctx.camera_matrix[0, 2])), int(round(2 * ctx.camera_matrix[1, 2]))
+    return None
 
 
 @log_stage("ai_agent")
 def analyze_scene(ctx: PipelineContext, config: dict | None = None) -> PipelineContext:
-    """Run AI scene understanding on the reconstructed scene.
-    
-    Combines geometric heuristics with optional LLM vision analysis.
-    """
+    """Detect anomalies, link each to its supporting frames, and score confidence."""
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     log = get_logger("ai_agent", ctx.output_dir)
 
     cloud = ctx.dense_cloud if ctx.dense_cloud is not None else ctx.sparse_cloud
-
     if cloud is None or len(cloud) == 0:
         log.warning("No point cloud for analysis")
         ctx.anomalies = []
         return ctx
 
     log.info(f"Analyzing scene ({len(cloud)} points)...")
-
     metric = _is_metric(ctx)
-    if not metric:
-        log.info("Scale is relative/unscaled — anomaly descriptions will use relative language")
 
-    anomalies = []
+    # 1. Geometric detection
+    anomalies = detect_elevation_anomalies(cloud, ctx.dense_colors, cfg, metric=metric)
+    anomalies += detect_density_anomalies(cloud, cfg)
+    for i, a in enumerate(anomalies):
+        a["id"] = f"anom_{i:03d}"
+    log.info(f"Geometric detection: {len(anomalies)} candidate anomalies")
 
-    # ── Geometric analysis ──
-    log.info("Running elevation anomaly detection...")
-    elev_anomalies = detect_elevation_anomalies(cloud, ctx.dense_colors, cfg, metric=metric)
-    anomalies.extend(elev_anomalies)
-    log.info(f"Found {len(elev_anomalies)} elevation anomalies")
+    # 2 + 3. Evidence linking and confidence
+    size = _image_size(ctx)
+    crops_dir = ctx.output_dir / "evidence"
+    for a in anomalies:
+        attach_evidence(a, ctx.poses, ctx.camera_matrix, size or (1, 1),
+                        ctx.frame_paths, ctx.frame_timestamps,
+                        crops_dir=crops_dir if size else None,
+                        max_frames=cfg["max_supporting_frames"],
+                        max_crops=cfg["max_crops_per_anomaly"])
+    verified = sum(1 for a in anomalies if a["supporting_frames"])
+    log.info(f"Evidence linking: {verified}/{len(anomalies)} anomalies seen in at least one frame")
 
-    log.info("Running density anomaly detection...")
-    density_anomalies = detect_density_anomalies(cloud, cfg)
-    anomalies.extend(density_anomalies)
-    log.info(f"Found {len(density_anomalies)} density anomalies")
-
-    # ── LLM analysis (optional) ──
-    if cfg["use_llm"]:
-        log.info("Rendering views for LLM analysis...")
-        views = render_views_for_llm(ctx, cfg["max_rendered_views"])
-        if views:
-            import asyncio
+    # 4. Optional visual check with Bedrock
+    if cfg["use_bedrock"]:
+        client = None
+        ranked = sorted(anomalies, key=lambda a: a["confidence"], reverse=True)
+        for a in ranked[:cfg["max_bedrock_anomalies"]]:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # Already in async context
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        anomalies = pool.submit(
-                            asyncio.run, analyze_with_llm(views, anomalies, cfg)
-                        ).result()
-                else:
-                    anomalies = asyncio.run(analyze_with_llm(views, anomalies, cfg))
-            except Exception as e:
-                log.warning(f"LLM analysis failed: {e}")
+                client = client or _bedrock_client(cfg["bedrock_region"])
+                assessment = assess_with_bedrock(a, cfg, client)
+                if assessment:
+                    apply_visual_assessment(a, assessment, cfg["visual_weight"])
+            except Exception as e:  # keep the geometric result if Bedrock fails
+                log.warning(f"Bedrock check failed for {a['id']}: {e}")
+                a["visual_assessment_error"] = str(e)[:200]
 
-    # Rank anomalies by confidence
     anomalies.sort(key=lambda a: a.get("confidence", 0), reverse=True)
 
-    # Add GPS coordinates if origin is available and mode supports it
+    # GPS coordinates when the reconstruction is georeferenced
     if ctx.geo_origin and ctx.scale_status != "relative_unscaled":
         from .utils.geo import local_enu_to_gps
-        for anomaly in anomalies:
-            pos = anomaly.get("position_enu")
-            if pos:
-                gps = local_enu_to_gps(np.array([pos]), ctx.geo_origin)
+        for a in anomalies:
+            if a.get("position_enu"):
+                gps = local_enu_to_gps(np.array([a["position_enu"]]), ctx.geo_origin)
                 if gps:
-                    anomaly["position_gps"] = gps[0]
+                    a["position_gps"] = gps[0]
 
     ctx.anomalies = anomalies
 
-    # Save anomaly report
     report = {
+        "schema_version": SCHEMA_VERSION,
         "total_anomalies": len(anomalies),
+        "verified_anomalies": verified,
         "reconstruction_mode": ctx.reconstruction_mode,
         "scale_status": ctx.scale_status,
         "anomalies": anomalies,
-        "analysis_config": cfg,
+        "analysis_config": {k: v for k, v in cfg.items() if k != "bedrock_region"},
     }
-
     report_path = ctx.output_dir / "anomaly_report.json"
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
 
-    log.info(f"Scene analysis complete: {len(anomalies)} anomalies found")
-    log.info(f"Anomaly report saved to {report_path}")
-
+    log.info(f"Scene analysis complete: {len(anomalies)} anomalies ({verified} with frame evidence)")
     return ctx
