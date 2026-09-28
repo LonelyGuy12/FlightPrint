@@ -1,0 +1,26 @@
+{
+  "stage1": {
+    "target_fps": 5.0,
+    "min_frame_interval_s": 0.1,
+    "max_frame_interval_s": 0.5,
+    "histogram_diff_thresh": 0.05,
+    "blur_thresh": 10.0,
+    "optical_flow_thresh": 1.0,
+    "max_frames": 500
+  },
+  "stage3": {
+    "detector": "sift",
+    "max_features": 5000,
+    "match_neighbors": 8,
+    "ratio_thresh": 0.80,
+    "min_matches": 10,
+    "ransac_thresh": 3.0
+  },
+  "stage4": {
+    "essential_ransac_thresh": 2.0,
+    "pnp_ransac_thresh": 8.0,
+    "min_inliers": 8,
+    "use_bundle_adjustment": true,
+    "ba_window_size": 10
+  }
+}

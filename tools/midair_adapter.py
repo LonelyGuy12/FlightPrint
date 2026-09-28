@@ -187,7 +187,8 @@ def main() -> None:
 
     with h5py.File(h5_path, "r") as h5:
         traj = find_trajectory_group(h5, args.trajectory)
-        print(f"Using {traj.name}")
+        traj_name = traj.name  # capture before h5 closes
+        print(f"Using {traj_name}")
 
         # --- frames
         frame_rel = [_decode(p) for p in traj["camera_data"][args.camera][()]]
@@ -222,7 +223,10 @@ def main() -> None:
     step = max(1, int(round(IMU_HZ / args.imu_rate)))
     imu_idx = np.arange(0, n_att, step)
 
-    width, height = image_size(frame_paths[0]) if frame_paths else (1024, 1024)
+    if args.skip_video or not frame_paths:
+        width, height = (1024, 1024)  # Mid-Air cameras are always 1024×1024
+    else:
+        width, height = image_size(frame_paths[0])
     metadata = {
         "gps_track": [
             {"timestamp": round(float(t), 4), "lat": float(g[0]), "lon": float(g[1]), "alt": round(float(g[2]), 3)}
@@ -250,7 +254,7 @@ def main() -> None:
         "source": {
             "dataset": "Mid-Air (CC BY-NC-SA 4.0, https://midair.ulg.ac.be)",
             "climate_dir": str(args.climate_dir),
-            "trajectory": traj.name.strip("/"),
+            "trajectory": traj_name.strip("/"),
             "camera": args.camera,
             "position_source": args.position_source,
             "geo_origin": {"lat": args.origin_lat, "lon": args.origin_lon, "alt": args.origin_alt},
