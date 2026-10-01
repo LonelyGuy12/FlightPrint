@@ -14,8 +14,69 @@ changes depending on available metadata.
 import cv2
 import numpy as np
 from pathlib import Path
-from scipy.spatial.transform import Rotation as R
-from scipy.optimize import least_squares
+# scipy may be unavailable (DLL blocked by Application Control policy).
+# Provide pure-numpy fallbacks for the small subset we actually use.
+try:
+    from scipy.spatial.transform import Rotation as _ScipyR
+    from scipy.optimize import least_squares
+except ImportError:
+    _ScipyR = None
+    least_squares = None  # not called in vision-only mode
+
+
+class _NumpyRotation:
+    """Minimal drop-in for scipy.spatial.transform.Rotation (Euler only)."""
+
+    def __init__(self, matrix):
+        self._mat = matrix
+
+    @staticmethod
+    def from_euler(seq, angles, degrees=False):
+        """Build rotation from ZYX / XYZ Euler angles using numpy."""
+        if degrees:
+            angles = [a * np.pi / 180.0 for a in angles]
+        cx, cy, cz = np.cos(angles[0]), np.cos(angles[1]), np.cos(angles[2])
+        sx, sy, sz = np.sin(angles[0]), np.sin(angles[1]), np.sin(angles[2])
+        if seq.lower() == 'xyz':
+            Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+            Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+            Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+            mat = Rz @ Ry @ Rx
+        else:  # default ZYX
+            mat = np.eye(3)
+        return _NumpyRotation(mat)
+
+    @staticmethod
+    def from_matrix(matrix):
+        return _NumpyRotation(matrix)
+
+    def as_matrix(self):
+        return self._mat
+
+    def as_euler(self, seq, degrees=False):
+        """Extract Euler angles from rotation matrix (XYZ only)."""
+        m = self._mat
+        if seq.lower() == 'xyz':
+            sy = np.sqrt(m[0, 0]**2 + m[1, 0]**2)
+            singular = sy < 1e-6
+            if not singular:
+                x = np.arctan2(m[2, 1], m[2, 2])
+                y = np.arctan2(-m[2, 0], sy)
+                z = np.arctan2(m[1, 0], m[0, 0])
+            else:
+                x = np.arctan2(-m[1, 2], m[1, 1])
+                y = np.arctan2(-m[2, 0], sy)
+                z = 0.0
+            angles = [x, y, z]
+        else:
+            angles = [0.0, 0.0, 0.0]
+        if degrees:
+            angles = [a * 180.0 / np.pi for a in angles]
+        return angles
+
+
+# Use scipy if available, otherwise fall back to numpy implementation
+R = _ScipyR if _ScipyR is not None else _NumpyRotation
 
 from .utils.logging import get_logger, log_stage
 from .utils.io import PipelineContext
