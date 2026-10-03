@@ -20,9 +20,16 @@ running_pipelines: dict = {}
 def _run_pipeline_background(job_id: str, job_info: dict, stages: list[int] | None, config: dict | None):
     """Run the pipeline in a background thread."""
     import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(repo_root))
 
     from pipeline.runner import PipelineRunner
+    
+    if not config:
+        config_path = repo_root / "midair_config.json"
+        if config_path.exists():
+            with open(config_path) as f:
+                config = json.load(f)
 
     output_dir = Path(job_info["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
