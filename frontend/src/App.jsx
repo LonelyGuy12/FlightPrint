@@ -11,6 +11,7 @@ import {
   getSceneData,
   fetchFile,
   applyScale,
+  API_BASE,
 } from './utils/api';
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
 
   // 3D Data
   const [pointCloudData, setPointCloudData] = useState(null);
+  const [meshUrl, setMeshUrl] = useState(null);
   const [trajectory, setTrajectory] = useState(null);
   const [anomalies, setAnomalies] = useState([]);
   const [selectedAnomaly, setSelectedAnomaly] = useState(null);
@@ -140,6 +142,14 @@ export default function App() {
             continue;
           }
         }
+      }
+
+      // Load mesh URL if available (PLY for vertex colors)
+      if (scene.assets?.['mesh.ply']) {
+        const apiUrl = scene.assets['mesh.ply'].url;
+        setMeshUrl(API_BASE + apiUrl);
+      } else {
+        setMeshUrl(null);
       }
 
       // Stats from report
@@ -278,6 +288,7 @@ export default function App() {
           )}
           <Viewer3D
             pointCloudData={pointCloudData}
+            meshUrl={meshUrl}
             trajectory={trajectory}
             anomalies={anomalies}
             selectedAnomaly={selectedAnomaly}

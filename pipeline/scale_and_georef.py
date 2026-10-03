@@ -355,7 +355,10 @@ def _apply_imu(
     if not imu_data:
         return poses
 
-    from scipy.spatial.transform import Rotation as R
+    try:
+        from scipy.spatial.transform import Rotation as R
+    except ImportError:
+        from pipeline.stage4_poses import _NumpyRotation as R
 
     refined = []
     for i, pose in enumerate(poses):
