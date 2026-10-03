@@ -124,6 +124,7 @@ def _ctx(tmp: Path) -> PipelineContext:
 
 
 def test_stage9_links_bump_to_frames_and_writes_report():
+    import logging as _logging
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         ctx = s9.analyze_scene(_ctx(tmp), {})
@@ -136,6 +137,13 @@ def test_stage9_links_bump_to_frames_and_writes_report():
         crops = [f["crop_path"] for f in high["supporting_frames"] if f.get("crop_path")]
         assert crops and all(Path(c).exists() for c in crops)
         assert set(high["confidence_factors"]) == {"signal", "views", "diversity", "points"}
+        # On Windows, FileHandlers hold open file locks that prevent TemporaryDirectory
+        # cleanup. Close all handlers on the stage logger before exiting the with-block.
+        lg = _logging.getLogger("flightprint.ai_agent")
+        for h in list(lg.handlers):
+            if isinstance(h, _logging.FileHandler):
+                h.close()
+                lg.removeHandler(h)
 
 
 class FakeBedrock:

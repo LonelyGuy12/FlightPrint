@@ -3,7 +3,7 @@
     "target_fps": 5.0,
     "min_frame_interval_s": 0.1,
     "max_frame_interval_s": 0.5,
-    "histogram_diff_thresh": 0.05,
+    "histogram_diff_thresh": -1.0,
     "blur_thresh": 10.0,
     "optical_flow_thresh": 1.0,
     "max_frames": 500

@@ -94,7 +94,7 @@ def create_mesh(ctx: PipelineContext, config: dict | None = None) -> PipelineCon
 
     # Save mesh
     mesh_path = ctx.output_dir / "mesh.ply"
-    o3d.io.write_triangle_mesh(str(mesh_path), mesh)
+    o3d.io.write_triangle_mesh(str(mesh_path), mesh, write_ascii=True)
     ctx.mesh_path = mesh_path
     log.info(f"Saved mesh to {mesh_path}")
 
