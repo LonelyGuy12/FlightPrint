@@ -17,6 +17,19 @@ def get_logger(stage_name: str, output_dir: Path | None = None) -> logging.Logge
     logger = logging.getLogger(f"flightprint.{stage_name}")
     logger.setLevel(logging.DEBUG)
 
+    # Check whether an existing FileHandler points to a different directory.
+    # This matters on Windows where open handles block temp-dir cleanup in tests.
+    if logger.handlers and output_dir is not None:
+        target_log = (Path(output_dir) / f"{stage_name}.log").resolve()
+        stale = [
+            h for h in logger.handlers
+            if isinstance(h, logging.FileHandler)
+            and Path(h.baseFilename).resolve() != target_log
+        ]
+        for h in stale:
+            h.close()
+            logger.removeHandler(h)
+
     if logger.handlers:
         return logger
 
