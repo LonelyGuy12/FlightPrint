@@ -8,6 +8,10 @@
 # Install Python dependencies
 pip install -r requirements.txt
 
+# Sanity checks: OpenCV 5 (competition rule) + test suite
+python -c "import cv2; print(cv2.__version__)"  # expect 5.x
+python -m pytest tests/ -v
+
 # Run the backend
 cd backend
 uvicorn app.main:app --reload --port 8000
@@ -16,6 +20,40 @@ uvicorn app.main:app --reload --port 8000
 cd frontend
 npm install && npm run dev
 ```
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BEDROCK_MODEL_ID` | `amazon.nova-pro-v1:0` | Vision model for the Stage 9 visual check |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock (needs model access) |
+| `FLIGHTPRINT_USE_BEDROCK` | off | Set to `1` to enable the Stage 9 visual check without a config file |
+
+The Stage 9 Bedrock visual check is **off by default** (no surprise AWS calls).
+Enable it for one run with any of:
+
+```bash
+# CLI flag
+python -m pipeline.cli --video <video.mp4> --metadata <metadata.json> --output <out> --bedrock
+
+# Config JSON: {"stage9": {"use_bedrock": true}}
+python -m pipeline.cli --video <video.mp4> --metadata <metadata.json> --output <out> --config bedrock.json
+
+# API: POST /api/pipeline/run/{job_id} with {"config": {"stage9": {"use_bedrock": true}}}
+```
+
+At most the top 10 anomalies per run are sent to Bedrock (see
+`max_bedrock_anomalies`). Each checked anomaly gets `visual_assessment`
+(`label`, `description`, `confidence`, `model`) in `anomaly_report.json`;
+failed checks keep the geometric result with a `visual_assessment_error` note.
+
+## Testing & docs
+
+- `docs/TEST_PLAN.md` — environment, Mid-Air data, Stage 1–9 and Bedrock
+  procedures, expected outputs, pass/fail criteria.
+- `docs/BUG_LOG.md` — observed issues only, with reproduction and status.
+- `tools/README.md` — Mid-Air adapter usage plus test-data layout and where
+  `anomaly_report.json` / `evidence/` outputs land.
 
 ## Pipeline
 

@@ -19,6 +19,7 @@ Output: anomaly_report.json (schema_version 2) plus evidence/ crops.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -44,6 +45,57 @@ DEFAULT_CONFIG = {
     "max_bedrock_anomalies": 10,        # cost cap: only the top-N anomalies are checked
     "visual_weight": 0.25,
 }
+
+# Static fallbacks; BEDROCK_MODEL_ID / AWS_REGION are (re-)read from the
+# environment at runtime in analyze_scene, so exports set after import
+# still take effect. Explicit per-run config values always win over env.
+STATIC_BEDROCK_DEFAULTS = {
+    "bedrock_model_id": "amazon.nova-pro-v1:0",
+    "bedrock_region": "us-east-1",
+}
+
+# Env names honoured at runtime (bare names first, FLIGHTPRINT_-prefixed
+# aliases second for consistency with backend/app/config.py).
+_BEDROCK_ENV = {
+    "bedrock_model_id": ("BEDROCK_MODEL_ID", "FLIGHTPRINT_BEDROCK_MODEL_ID"),
+    "bedrock_region": ("AWS_REGION", "FLIGHTPRINT_AWS_REGION"),
+}
+# Opt-in env switch. Default stays False so nobody is billed by accident;
+# set FLIGHTPRINT_USE_BEDROCK=1 (or USE_BEDROCK=1) to enable without a config.
+_USE_BEDROCK_ENV = ("FLIGHTPRINT_USE_BEDROCK", "USE_BEDROCK")
+
+
+def _env_flag(name: str) -> bool | None:
+    val = os.environ.get(name)
+    if val is None:
+        return None
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_bedrock_config(cfg: dict, explicit: dict | None = None) -> dict:
+    """Apply environment overrides to a merged Stage 9 config (in place).
+
+    Precedence per key: explicit per-run config > environment > default.
+    Never enables Bedrock unless the caller (config or env flag) asked for it.
+    """
+    explicit = explicit or {}
+    for key, names in _BEDROCK_ENV.items():
+        if key in explicit:
+            continue
+        for name in names:
+            if os.environ.get(name):
+                cfg[key] = os.environ[name]
+                break
+        else:
+            cfg.setdefault(key, STATIC_BEDROCK_DEFAULTS[key])
+    if "use_bedrock" not in explicit:
+        for name in _USE_BEDROCK_ENV:
+            flag = _env_flag(name)
+            if flag is not None:
+                cfg["use_bedrock"] = flag
+                break
+    return cfg
+
 
 VISUAL_LABELS = ("damage", "obstruction", "unusual_object", "none")
 
@@ -154,7 +206,8 @@ VISUAL_PROMPT = (
     "You are checking one finding from a drone-survey 3D reconstruction. "
     "The images are crops from different video frames; the red ring marks the location of the finding. "
     "Geometric detector says: {description}.\n"
-    "What is at the ringed location? Answer with JSON only:\n"
+    "What is at the ringed location? If the surface looks normal and intact, answer \"none\". "
+    "Answer with JSON only:\n"
     '{{"label": one of "damage", "obstruction", "unusual_object", "none", '
     '"description": one short sentence on what you see, '
     '"confidence": number from 0 to 1}}'
@@ -166,37 +219,93 @@ def _bedrock_client(region: str):
     return boto3.client("bedrock-runtime", region_name=region)
 
 
-def assess_with_bedrock(anomaly: dict, config: dict, client=None) -> dict | None:
-    """Ask a Bedrock vision model what the evidence crops show. Returns the assessment or None."""
-    crops = [f["crop_path"] for f in anomaly.get("supporting_frames", []) if f.get("crop_path")]
-    if not crops:
+def _readable_crops(anomaly: dict) -> list[str]:
+    """Crop paths from supporting frames that exist and are readable."""
+    crops = []
+    for f in anomaly.get("supporting_frames", []) or []:
+        p = f.get("crop_path")
+        if p and Path(p).is_file():
+            crops.append(p)
+    return crops
+
+
+def _parse_visual_response(text: str) -> dict | None:
+    """Extract the model's JSON payload from raw response text.
+
+    Handles JSON-only replies as well as JSON surrounded by prose.
+    Returns None when no usable JSON object is present.
+    """
+    if not text:
         return None
-    client = client or _bedrock_client(config["bedrock_region"])
-
-    content = [{"text": VISUAL_PROMPT.format(description=anomaly.get("description", ""))}]
-    for p in crops:
-        content.append({"image": {"format": "jpeg", "source": {"bytes": Path(p).read_bytes()}}})
-
-    response = client.converse(
-        modelId=config["bedrock_model_id"],
-        messages=[{"role": "user", "content": content}],
-        inferenceConfig={"maxTokens": 300, "temperature": 0},
-    )
-    text = "".join(part.get("text", "") for part in response["output"]["message"]["content"])
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         return None
-    result = json.loads(text[start:end + 1])
+    try:
+        result = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return result if isinstance(result, dict) else None
 
-    label = result.get("label", "none")
+
+def _coerce_visual_confidence(value) -> float:
+    """Coerce a model-reported confidence to [0, 1]; fall back to 0.5."""
+    try:
+        c = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    if not math.isfinite(c):
+        return 0.5
+    return float(np.clip(c, 0.0, 1.0))
+
+
+def assess_with_bedrock(anomaly: dict, config: dict, client=None) -> dict | None:
+    """Ask a Bedrock vision model what the evidence crops show. Returns the assessment or None.
+
+    Returns None (leaving the geometric result untouched) when there are no
+    readable crops, the request fails, or the response is unusable. Never raises
+    for malformed model output; AWS/client errors propagate to the caller,
+    which logs them per anomaly in analyze_scene.
+    """
+    crops = _readable_crops(anomaly)
+    if not crops:
+        return None
+    client = client or _bedrock_client(config.get("bedrock_region") or "us-east-1")
+
+    images = []
+    for p in crops:
+        try:
+            images.append({"image": {"format": "jpeg", "source": {"bytes": Path(p).read_bytes()}}})
+        except OSError:
+            continue
+    if not images:
+        return None
+
+    content = [{"text": VISUAL_PROMPT.format(description=anomaly.get("description", ""))}]
+    content.extend(images)
+
+    response = client.converse(
+        modelId=config.get("bedrock_model_id") or STATIC_BEDROCK_DEFAULTS["bedrock_model_id"],
+        messages=[{"role": "user", "content": content}],
+        inferenceConfig={"maxTokens": 300, "temperature": 0},
+    )
+    try:
+        parts = response["output"]["message"]["content"]
+        text = "".join(part.get("text", "") for part in parts)
+    except (KeyError, TypeError, AttributeError):
+        return None
+    result = _parse_visual_response(text)
+    if result is None:
+        return None
+
+    label = str(result.get("label", "none")).strip().lower()
     if label not in VISUAL_LABELS:
         label = "unusual_object"
     return {
         "label": label,
         "description": str(result.get("description", ""))[:300],
-        "confidence": float(np.clip(float(result.get("confidence", 0.5)), 0.0, 1.0)),
-        "model": config["bedrock_model_id"],
-        "crops_checked": len(crops),
+        "confidence": _coerce_visual_confidence(result.get("confidence", 0.5)),
+        "model": config.get("bedrock_model_id") or STATIC_BEDROCK_DEFAULTS["bedrock_model_id"],
+        "crops_checked": len(images),
     }
 
 
@@ -234,6 +343,9 @@ def _image_size(ctx: PipelineContext) -> tuple[int, int] | None:
 def analyze_scene(ctx: PipelineContext, config: dict | None = None) -> PipelineContext:
     """Detect anomalies, link each to its supporting frames, and score confidence."""
     cfg = {**DEFAULT_CONFIG, **(config or {})}
+    # Environment overrides (BEDROCK_MODEL_ID / AWS_REGION / opt-in enable).
+    # Explicit per-run config values always win; default stays off.
+    resolve_bedrock_config(cfg, config)
     log = get_logger("ai_agent", ctx.output_dir)
 
     cloud = ctx.dense_cloud if ctx.dense_cloud is not None else ctx.sparse_cloud
@@ -266,6 +378,8 @@ def analyze_scene(ctx: PipelineContext, config: dict | None = None) -> PipelineC
 
     # 4. Optional visual check with Bedrock
     if cfg["use_bedrock"]:
+        log.info(f"Bedrock visual check on top-{cfg['max_bedrock_anomalies']} anomalies "
+                 f"(model={cfg['bedrock_model_id']})")
         client = None
         ranked = sorted(anomalies, key=lambda a: a["confidence"], reverse=True)
         for a in ranked[:cfg["max_bedrock_anomalies"]]:

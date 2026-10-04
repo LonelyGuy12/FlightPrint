@@ -176,9 +176,114 @@ def test_bedrock_says_nothing_there_lowers_confidence():
     assert a["confidence"] < 0.8
 
 
+# ---------------------------------------------------------------- Bedrock robustness (unit-level, FakeBedrock)
+
+class ExplodingBedrock:
+    """Fails the test if Bedrock is ever called (used when no call is expected)."""
+
+    def converse(self, **kw):
+        raise AssertionError("Bedrock should not have been called")
+
+
+def _anomaly_with_real_crop(tmp: Path):
+    import cv2
+    frame = tmp / "frame.jpg"
+    cv2.imwrite(str(frame), np.full((480, 640, 3), 128, np.uint8))
+    crop = s9_save_crop(frame)
+    return {"description": "test bump", "supporting_frames": [{"crop_path": str(crop)}]}
+
+
+def s9_save_crop(frame: Path) -> Path:
+    from pipeline.evidence import save_evidence_crop
+    out = frame.parent / "crop.jpg"
+    assert save_evidence_crop(frame, [320.0, 240.0], out) is not None
+    return out
+
+
+def test_bedrock_prose_without_json_returns_none():
+    with tempfile.TemporaryDirectory() as d:
+        a = _anomaly_with_real_crop(Path(d))
+        fake = FakeBedrock("I cannot see anything clearly, try again later.")
+        assert s9.assess_with_bedrock(a, s9.DEFAULT_CONFIG, client=fake) is None
+
+
+def test_bedrock_garbage_json_returns_none():
+    with tempfile.TemporaryDirectory() as d:
+        a = _anomaly_with_real_crop(Path(d))
+        fake = FakeBedrock('{"label": "damage", "confidence": ')  # truncated
+        assert s9.assess_with_bedrock(a, s9.DEFAULT_CONFIG, client=fake) is None
+
+
+def test_bedrock_missing_fields_use_defaults():
+    with tempfile.TemporaryDirectory() as d:
+        a = _anomaly_with_real_crop(Path(d))
+        fake = FakeBedrock('{"label": "obstruction"}')
+        out = s9.assess_with_bedrock(a, s9.DEFAULT_CONFIG, client=fake)
+        assert out is not None
+        assert out["label"] == "obstruction"
+        assert out["description"] == "" and out["confidence"] == 0.5
+        assert out["model"] == s9.DEFAULT_CONFIG["bedrock_model_id"]
+        assert out["crops_checked"] == 1
+
+
+def test_bedrock_invalid_label_falls_back():
+    with tempfile.TemporaryDirectory() as d:
+        a = _anomaly_with_real_crop(Path(d))
+        fake = FakeBedrock('{"label": "alien", "description": "x", "confidence": 0.7}')
+        out = s9.assess_with_bedrock(a, s9.DEFAULT_CONFIG, client=fake)
+        assert out is not None and out["label"] == "unusual_object"
+
+
+def test_bedrock_invalid_confidence_is_sanitised():
+    with tempfile.TemporaryDirectory() as d:
+        for raw in ('NaN', '"high"', "5.0", "-2"):
+            a = _anomaly_with_real_crop(Path(d))
+            fake = FakeBedrock(f'{{"label": "damage", "description": "x", "confidence": {raw}}}')
+            out = s9.assess_with_bedrock(a, s9.DEFAULT_CONFIG, client=fake)
+            assert out is not None
+            assert 0.0 <= out["confidence"] <= 1.0, raw
+
+
+def test_bedrock_missing_crop_files_skips_call():
+    a = {"description": "ghost", "supporting_frames": [{"crop_path": "/nonexistent/crop.jpg"}]}
+    assert s9.assess_with_bedrock(a, s9.DEFAULT_CONFIG, client=ExplodingBedrock()) is None
+    assert s9.assess_with_bedrock({"description": "empty"}, s9.DEFAULT_CONFIG,
+                                  client=ExplodingBedrock()) is None
+
+
+def test_resolve_bedrock_config_env_and_explicit_precedence(monkeypatch):
+    cfg = {"use_bedrock": False, "bedrock_model_id": "default-m", "bedrock_region": "default-r"}
+    # Env applies when nothing was set explicitly.
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "env-model")
+    monkeypatch.setenv("AWS_REGION", "env-region")
+    monkeypatch.setenv("FLIGHTPRINT_USE_BEDROCK", "1")
+    out = s9.resolve_bedrock_config(dict(cfg), {})
+    assert out["bedrock_model_id"] == "env-model"
+    assert out["bedrock_region"] == "env-region"
+    assert out["use_bedrock"] is True
+    # Explicit per-run config always wins over env (same merge order as analyze_scene).
+    explicit = {"bedrock_model_id": "explicit-m", "use_bedrock": False}
+    merged = {**cfg, **explicit}
+    out = s9.resolve_bedrock_config(merged, explicit)
+    assert out["bedrock_model_id"] == "explicit-m"
+    assert out["use_bedrock"] is False
+
+
+def test_bedrock_stays_off_by_default():
+    assert s9.DEFAULT_CONFIG["use_bedrock"] is False
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
+    passed, skipped = 0, 0
     for t in tests:
-        t()
+        try:
+            t()
+        except TypeError as e:
+            # Fixture-based tests (e.g. monkeypatch) need pytest; skip here.
+            print(f"SKIP {t.__name__} ({e})")
+            skipped += 1
+            continue
         print(f"PASS {t.__name__}")
-    print(f"{len(tests)} tests passed")
+        passed += 1
+    print(f"{passed} tests passed, {skipped} skipped (run under pytest for all)")

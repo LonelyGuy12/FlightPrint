@@ -24,9 +24,6 @@ class Settings(BaseSettings):
     aws_s3_bucket: str = ""
     aws_region: str = "us-east-1"
 
-    # AI
-    openai_api_key: str = ""
-
     class Config:
         env_file = ".env"
         env_prefix = "FLIGHTPRINT_"
