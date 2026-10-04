@@ -55,6 +55,60 @@ python -m pipeline.cli \
 
 The pipeline should report `Reconstruction mode: full` (GPS + IMU + intrinsics detected).
 
+### 4. Test-data layout & outputs (M6)
+
+Where things belong (nothing under `data/` is committed — it is git-ignored):
+
+```
+data/
+  MidAir/<climate>/...          # downloaded dataset (sensor_records.hdf5 + color_* folders)
+  midair_traj0/                 # adapter output for one trajectory
+    trajectory.mp4              # converted video (pipeline input)
+    metadata.json               # GPS track, camera, IMU (pipeline input)
+    groundtruth_poses.json      # 100 Hz exact poses (for accuracy checks, Phase 3)
+output/
+  midair_traj0/                 # pipeline output for that trajectory
+    frames/                     # extracted frames
+    anomaly_report.json         # schema_version 2 (see below)
+    evidence/                   # evidence crops: <anom_id>_f<frame>.jpg, red ring = finding
+    progress.json               # per-stage status (for API polling)
+    pipeline_report.json        # final summary
+```
+
+Run Stage 9 with the Bedrock visual check (off by default; needs AWS
+credentials, billed per call — at most the top 10 anomalies):
+
+```bash
+python -m pipeline.cli \
+    --video data/midair_traj0/trajectory.mp4 \
+    --metadata data/midair_traj0/metadata.json \
+    --output output/midair_traj0 \
+    --bedrock
+# Optional overrides: --bedrock-model-id <id> --bedrock-region <region>
+#   --max-bedrock-anomalies N
+# Or via env: FLIGHTPRINT_USE_BEDROCK=1 BEDROCK_MODEL_ID=amazon.nova-pro-v1:0 AWS_REGION=us-east-1
+# Or via config JSON: {"stage9": {"use_bedrock": true}}
+```
+
+What to check afterwards:
+
+- `output/midair_traj0/anomaly_report.json`: `schema_version` is 2;
+  every verified anomaly lists `supporting_frames` (best first) with
+  `frame_index`, `timestamp`, `pixel`, `depth`, `crop_path`; unverified
+  findings have `confidence <= 0.30` and `evidence_level: unverified`.
+- `output/midair_traj0/evidence/`: every `crop_path` in the report exists
+  on disk; open a few and confirm the red ring marks a real structure.
+- With `--bedrock`: top anomalies carry `visual_assessment` (`label`,
+  `description`, `confidence`, `model`); failed checks carry
+  `visual_assessment_error` instead and keep their geometric result.
+- Full pass/fail criteria live in `docs/TEST_PLAN.md`; observed issues go in
+  `docs/BUG_LOG.md`.
+
+> Status 2026-10-04: no real trajectory has been run in this environment yet
+> (dataset not downloaded here). The commands above are the exact,
+> verified-CLI procedure — do not claim a trajectory run until its outputs
+> exist under `output/` and are recorded in `docs/BUG_LOG.md`.
+
 ### License
 
 Mid-Air is released under [CC BY-NC-SA 4.0](http://creativecommons.org/licenses/by-nc-sa/4.0/). Don't commit the data (`data/` is git-ignored). Cite:
