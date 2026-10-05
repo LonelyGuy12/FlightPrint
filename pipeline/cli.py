@@ -11,6 +11,11 @@ with {"stage9": {"use_bedrock": true}} in the --config JSON, or with the
 FLIGHTPRINT_USE_BEDROCK=1 env var. Model/region come from --bedrock-model-id /
 --bedrock-region flags or the BEDROCK_MODEL_ID / AWS_REGION env vars
 (defaults: amazon.nova-pro-v1:0, us-east-1).
+
+Frame object detection (Stage 9, OpenCV DNN / YOLO ONNX) is OFF by default.
+Enable it with --detect, with {"stage9": {"use_frame_detection": true,
+"yolo_model_path": "models/yolov8n.onnx"}} in the --config JSON, or with the
+FLIGHTPRINT_USE_DETECTION=1 env var (model path via YOLO_MODEL_PATH).
 """
 
 import argparse
@@ -51,6 +56,14 @@ Operating Modes (auto-detected):
                        help="AWS region for Bedrock (default: us-east-1, or AWS_REGION)")
     parser.add_argument("--max-bedrock-anomalies", type=int, default=None,
                        help="Check at most this many top anomalies with Bedrock (default: 10)")
+    parser.add_argument("--detect", dest="detect", action="store_true", default=None,
+                       help="Enable Stage 9 frame object detection (needs a YOLO .onnx file)")
+    parser.add_argument("--no-detect", dest="detect", action="store_false",
+                       help="Disable Stage 9 frame object detection")
+    parser.add_argument("--yolo-model", default=None,
+                       help="Path to YOLOv5/YOLOv8 .onnx weights (or YOLO_MODEL_PATH)")
+    parser.add_argument("--yolo-conf", type=float, default=None,
+                       help="Detection confidence threshold (default: 0.4)")
 
     args = parser.parse_args()
 
@@ -89,6 +102,13 @@ Operating Modes (auto-detected):
         stage9["bedrock_region"] = args.bedrock_region
     if args.max_bedrock_anomalies is not None:
         stage9["max_bedrock_anomalies"] = args.max_bedrock_anomalies
+    # Stage 9 frame detection (explicit flags win over config file).
+    if args.detect is not None:
+        stage9["use_frame_detection"] = args.detect
+    if args.yolo_model:
+        stage9["yolo_model_path"] = args.yolo_model
+    if args.yolo_conf is not None:
+        stage9["yolo_conf_threshold"] = args.yolo_conf
     if stage9:
         config["stage9"] = stage9
 
