@@ -11,9 +11,9 @@ python -c "import cv2; print(cv2.__version__)"   # expect 5.x
 python -m pytest tests/ -v
 ```
 
-Pass criteria: `tests/test_evidence.py`, `tests/test_midair_adapter.py` and
-`tests/test_modes.py` all pass on the machine under test. OpenCV major version
-must be 5 (competition rule).
+Pass criteria: `tests/test_evidence.py`, `tests/test_frame_detection.py`,
+`tests/test_midair_adapter.py` and `tests/test_modes.py` all pass on the
+machine under test. OpenCV major version must be 5 (competition rule).
 
 ## 2. Mid-Air test data
 
@@ -32,9 +32,13 @@ hashes in the bug/test log when done.
 | 5–8 | Same CLI, `--stages 5 6 7 8` | dense cloud, mesh, georeferenced outputs, filtered cloud |
 | 9 (geometry only) | `--stages 9` (Bedrock off by default) | `anomaly_report.json` (`schema_version: 2`), `evidence/` crops |
 | 9 (with Bedrock) | Add `--bedrock` (see §4) | Same as above plus `visual_assessment` on up to 10 top anomalies |
+| 9 (with detection) | Add `--detect --yolo-model <model.onnx>` (see §5) | Same as geometry plus `overlapping_detections` on fused anomalies and a `frame_detection` summary |
 
 Unit coverage for Stage 9 geometry/evidence/confidence lives in
 `tests/test_evidence.py` (synthetic scene, no dataset or AWS needed).
+Unit coverage for frame detection/fusion lives in
+`tests/test_frame_detection.py` (synthetic YOLO outputs + stub detector,
+no weights needed).
 
 ## 4. Bedrock testing
 
@@ -69,19 +73,61 @@ real evidence crop. Until it is performed, Oct 4 stays PARTIAL. Record model,
 region, input crop, output location, response validity and any prompt changes
 in `docs/BUG_LOG.md` when it happens.
 
-## 5. Expected outputs (per job output dir)
+## 5. Frame detection testing
+
+Detection is OFF by default (`use_frame_detection: False`); weights (`.onnx`)
+are not in the repo. Three equivalent ways to enable it for one run
+(explicit config wins over env):
+
+```bash
+# a) CLI flags
+python -m pipeline.cli --video <mp4> --metadata <json> --output <out> \
+  --detect --yolo-model models/yolov8n.onnx
+
+# b) Config JSON
+# {"stage9": {"use_frame_detection": true, "yolo_model_path": "models/yolov8n.onnx"}}
+python -m pipeline.cli --video <mp4> --metadata <json> --output <out> --config detect.json
+
+# c) Environment (plus model path)
+FLIGHTPRINT_USE_DETECTION=1 YOLO_MODEL_PATH=models/yolov8n.onnx \
+  python -m pipeline.cli --video <mp4> --metadata <json> --output <out> --stages 9
+```
+
+Any YOLOv5/YOLOv8 ONNX export with 80 COCO classes works
+(`pipeline/stage9_detection.py` handles both output layouts).
+Cost/sampling caps: `yolo_frame_stride` (default 2), `yolo_max_frames`
+(default 40), `max_detections_per_frame` (default 50).
+
+Unit coverage (synthetic outputs, clearly labelled):
+`test_parse_*` cover both YOLO layouts, NMS and thresholding;
+`test_fuse_*` cover the confidence boost on bbox overlap, no-op without
+overlap, and irrelevant classes recorded-but-not-boosting;
+`test_analyze_scene_with_injected_detector_*` covers the Stage 9 hook,
+schema compatibility and failure safety. These do NOT count as a real
+weights test.
+
+A REAL weights test needs a `.onnx` file and real frames. Until it is
+performed, Oct 7 stays PARTIAL. Record model file (+ source), frames
+checked, total detections, anomalies with overlaps and any threshold tuning
+in `docs/BUG_LOG.md` when it happens.
+
+## 6. Expected outputs (per job output dir)
 
 - `anomaly_report.json` — `schema_version: 2`, `total_anomalies`,
   `verified_anomalies`, per-anomaly `id`, `signal_strength`, `supporting_frames`
   (`frame_index`, `timestamp`, `pixel`, `depth`, `crop_path`),
   `view_angle_spread_deg`, `confidence`, `confidence_factors`
   (`signal`, `views`, `diversity`, `points`, plus `visual` after a Bedrock
-  check), `evidence_level`, and `visual_assessment` (`label`, `description`,
-  `confidence`, `model`) when the visual check succeeded.
+  check and `detections` after a detection run), `evidence_level`,
+  `visual_assessment` (`label`, `description`, `confidence`, `model`) when the
+  visual check succeeded, and `overlapping_detections` (`frame_index`,
+  `class_name`, `confidence`, `bbox`) when frame detection ran.
+- `frame_detection` (top level, only when detection ran): `frames_checked`,
+  `total_detections`, `anomalies_with_overlaps`, capped per-frame lists.
 - `evidence/` — JPEG crops with a red ring at the finding (`<anom>_f<frame>.jpg`).
 - `progress.json`, `pipeline_report.json`, stage artefacts (frames, clouds, mesh).
 
-## 6. Pass / fail criteria
+## 7. Pass / fail criteria
 
 - Geometry: `verified_anomalies / total_anomalies` reported; every verified
   anomaly has ≥1 existing `crop_path`; every unverified anomaly has
@@ -89,12 +135,19 @@ in `docs/BUG_LOG.md` when it happens.
 - Confidence blend (after a successful visual check): equals
   `0.75 * prior + 0.25 * visual_support` (±0.001), where visual support is the
   model confidence for labels other than `none`, else `1 - confidence`.
+- Fusion blend (after a detection run): for an anomaly with a relevant-class
+  overlap, equals `(1 - w) * prior + w * best_detection_conf` (±0.001),
+  `w` = `detection_weight` (default 0.15). Anomalies without overlaps are
+  untouched — detection never lowers confidence.
 - Bedrock failure safety: a failed check records `visual_assessment_error` on
   that anomaly only; the geometric result and its confidence are preserved and
   the pipeline still completes.
+- Detection failure safety: a failed run (e.g. missing model file) logs a
+  warning; the geometric result and its confidence are preserved and the
+  pipeline still completes.
 - No OpenAI/GPT-4o code paths in Stage 9 (grep must show only Bedrock/boto3).
 
-## 7. Evidence validation
+## 8. Evidence validation
 
 For each verified anomaly: open the saved crop, confirm the ring marks a real
 structure (not sky/edge artefact), and confirm the reported `frame_index` /
@@ -102,7 +155,7 @@ structure (not sky/edge artefact), and confirm the reported `frame_index` /
 `docs/BUG_LOG.md`): a supporting frame may show a wall in front of the point;
 the crop makes this visible by design.
 
-## 8. API / frontend integration checks (deferred)
+## 9. API / frontend integration checks (deferred)
 
 Upload → run → status → results → viewer scene with evidence frames. Not part
 of Oct 4 scope; tracked for Phase 3 integration. Known gap: the anomaly panel
