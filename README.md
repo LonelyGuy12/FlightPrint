@@ -28,6 +28,8 @@ npm install && npm run dev
 | `BEDROCK_MODEL_ID` | `amazon.nova-pro-v1:0` | Vision model for the Stage 9 visual check |
 | `AWS_REGION` | `us-east-1` | AWS region for Bedrock (needs model access) |
 | `FLIGHTPRINT_USE_BEDROCK` | off | Set to `1` to enable the Stage 9 visual check without a config file |
+| `YOLO_MODEL_PATH` | _(empty)_ | Path to YOLOv5/YOLOv8 `.onnx` weights for Stage 9 frame detection |
+| `FLIGHTPRINT_USE_DETECTION` | off | Set to `1` to enable Stage 9 frame detection without a config file |
 
 The Stage 9 Bedrock visual check is **off by default** (no surprise AWS calls).
 Enable it for one run with any of:
@@ -46,6 +48,17 @@ At most the top 10 anomalies per run are sent to Bedrock (see
 `max_bedrock_anomalies`). Each checked anomaly gets `visual_assessment`
 (`label`, `description`, `confidence`, `model`) in `anomaly_report.json`;
 failed checks keep the geometric result with a `visual_assessment_error` note.
+
+Stage 9 frame object detection (YOLO via OpenCV DNN, any 80-class COCO
+`.onnx` — weights not in the repo) is likewise **off by default**:
+
+```bash
+python -m pipeline.cli --video <video.mp4> --metadata <metadata.json> --output <out> --detect --yolo-model models/yolov8n.onnx
+# Or config JSON: {"stage9": {"use_frame_detection": true, "yolo_model_path": "models/yolov8n.onnx"}}
+```
+
+Fused anomalies get `overlapping_detections` plus a `detections` confidence
+factor; anomalies with no overlap are untouched.
 
 ## Testing & docs
 
