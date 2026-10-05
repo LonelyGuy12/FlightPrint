@@ -26,6 +26,13 @@ from pathlib import Path
 import numpy as np
 
 from .evidence import attach_evidence
+from .stage9_detection import (
+    DETECTION_CONFIG_DEFAULTS,
+    detection_summary,
+    fuse_detections,
+    resolve_detection_config,
+    run_frame_detection,
+)
 from .utils.io import PipelineContext
 from .utils.logging import get_logger, log_stage
 
@@ -44,6 +51,9 @@ DEFAULT_CONFIG = {
     "bedrock_region": os.environ.get("AWS_REGION", "us-east-1"),
     "max_bedrock_anomalies": 10,        # cost cap: only the top-N anomalies are checked
     "visual_weight": 0.25,
+    # Frame-level object detection with OpenCV DNN / YOLO ONNX
+    # (off by default; needs model weights, see pipeline/stage9_detection.py)
+    **DETECTION_CONFIG_DEFAULTS,
 }
 
 # Static fallbacks; BEDROCK_MODEL_ID / AWS_REGION are (re-)read from the
@@ -346,6 +356,7 @@ def analyze_scene(ctx: PipelineContext, config: dict | None = None) -> PipelineC
     # Environment overrides (BEDROCK_MODEL_ID / AWS_REGION / opt-in enable).
     # Explicit per-run config values always win; default stays off.
     resolve_bedrock_config(cfg, config)
+    resolve_detection_config(cfg, config)
     log = get_logger("ai_agent", ctx.output_dir)
 
     cloud = ctx.dense_cloud if ctx.dense_cloud is not None else ctx.sparse_cloud
@@ -375,6 +386,24 @@ def analyze_scene(ctx: PipelineContext, config: dict | None = None) -> PipelineC
                         max_crops=cfg["max_crops_per_anomaly"])
     verified = sum(1 for a in anomalies if a["supporting_frames"])
     log.info(f"Evidence linking: {verified}/{len(anomalies)} anomalies seen in at least one frame")
+
+    # 3b. Optional frame-level object detection (OpenCV DNN / YOLO ONNX) fused
+    # with the 3D anomalies. Off by default; never fails the stage.
+    frame_det_summary = None
+    if cfg.get("use_frame_detection"):
+        try:
+            injected = (config or {}).get("_detector")
+            frame_dets = run_frame_detection(ctx.frame_paths, cfg,
+                                             detector=injected, log=log)
+            n_fused = fuse_detections(anomalies, frame_dets,
+                                      cfg.get("detection_weight", 0.15))
+            frame_det_summary = detection_summary(
+                frame_dets, anomalies, cfg.get("max_report_detections_per_frame", 10))
+            log.info(f"Frame detection: {frame_det_summary['total_detections']} detections "
+                     f"in {frame_det_summary['frames_checked']} frames, "
+                     f"{n_fused} anomalies with overlapping detections")
+        except Exception as e:  # keep the geometric result if detection fails
+            log.warning(f"Frame detection failed: {e}")
 
     # 4. Optional visual check with Bedrock
     if cfg["use_bedrock"]:
@@ -412,8 +441,11 @@ def analyze_scene(ctx: PipelineContext, config: dict | None = None) -> PipelineC
         "reconstruction_mode": ctx.reconstruction_mode,
         "scale_status": ctx.scale_status,
         "anomalies": anomalies,
-        "analysis_config": {k: v for k, v in cfg.items() if k != "bedrock_region"},
+        "analysis_config": {k: v for k, v in cfg.items()
+                            if k != "bedrock_region" and not k.startswith("_")},
     }
+    if frame_det_summary is not None:
+        report["frame_detection"] = frame_det_summary
     report_path = ctx.output_dir / "anomaly_report.json"
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
