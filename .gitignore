@@ -17,9 +17,6 @@ output/
 testing/
 MidAir/
 uploads/
-*.mp4
-*.avi
-*.mov
 *.ply
 *.obj
 *.las
