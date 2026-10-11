@@ -12,8 +12,10 @@ python -m pytest tests/ -v
 ```
 
 Pass criteria: `tests/test_evidence.py`, `tests/test_frame_detection.py`,
-`tests/test_midair_adapter.py` and `tests/test_modes.py` all pass on the
-machine under test. OpenCV major version must be 5 (competition rule).
+`tests/test_midair_adapter.py`, `tests/test_modes.py` and
+`tests/test_evidence_accuracy.py` all pass on the machine under test
+(47 tests green on 2026-10-11). OpenCV major version must be 5
+(competition rule).
 
 ## 2. Mid-Air test data
 
@@ -106,10 +108,34 @@ overlap, and irrelevant classes recorded-but-not-boosting;
 schema compatibility and failure safety. These do NOT count as a real
 weights test.
 
-A REAL weights test needs a `.onnx` file and real frames. Until it is
-performed, Oct 7 stays PARTIAL. Record model file (+ source), frames
-checked, total detections, anomalies with overlaps and any threshold tuning
-in `docs/BUG_LOG.md` when it happens.
+A REAL weights test needs a `.onnx` file and real frames. Performed 2026-10-11:
+official YOLOv8n ONNX from the `v8.4.0` release assets (12.8 MB, kept outside
+the repo; note `v8.1.0`/`v8.2.0`/`v8.3.0` asset URLs 404) on real photos
+(persons/chairs/tv/plant, 0.2 s/frame CPU), plus a full synthetic-city run —
+`python generate_buildings.py`, then stages 1–4+9 with `--detect --yolo-model`:
+11 frames, 10 poses, 1130 points, 2/2 anomalies verified, 15 detections
+(kite/umbrella, non-relevant → overlaps logged, no boost), 6/6 crops on disk,
+31 s. See `docs/BUG_LOG.md` (BUG-007). Drone-frame validation still needs real
+footage (BUG-008).
+
+## 6. Evidence-accuracy measurement (Oct 16 tool, M2)
+
+`tools/evidence_accuracy.py` compares `anomaly_report.json` against the
+adapter's `groundtruth_poses.json`:
+
+```bash
+python tools/evidence_accuracy.py --report output/traj0/anomaly_report.json \
+  --groundtruth data/midair_traj0/groundtruth_poses.json \
+  --metadata data/midair_traj0/metadata.json --out output/traj0/evidence_accuracy.json
+```
+
+Per anomaly: `temporal_coverage` (supporting timestamps inside the ground-truth
+range), `nearest_pose_distance_m` (ENU→NED approximation — GPS-anchored runs
+only; skipped with a warning otherwise), `nearest_pose_time_offset_s`,
+`inside_trajectory_bbox`. Summary carries means/medians/counts. Unit coverage:
+`tests/test_evidence_accuracy.py` (synthetic report + trajectory, no dataset).
+The Mid-Air measurement itself is BLOCKED on converted data (BUG-008) — the
+tool is ready, the numbers are not.
 
 ## 6. Expected outputs (per job output dir)
 
