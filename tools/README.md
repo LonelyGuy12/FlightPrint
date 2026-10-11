@@ -104,6 +104,31 @@ What to check afterwards:
 - Full pass/fail criteria live in `docs/TEST_PLAN.md`; observed issues go in
   `docs/BUG_LOG.md`.
 
+Run Stage 9 with frame object detection (off by default; needs a YOLOv5/YOLOv8
+`.onnx` file — weights are not in the repo, any 80-class COCO export works):
+
+```bash
+python -m pipeline.cli \
+    --video data/midair_traj0/trajectory.mp4 \
+    --metadata data/midair_traj0/metadata.json \
+    --output output/midair_traj0 \
+    --detect --yolo-model models/yolov8n.onnx
+# Optional: --yolo-conf 0.5
+# Or via env: FLIGHTPRINT_USE_DETECTION=1 YOLO_MODEL_PATH=models/yolov8n.onnx
+# Or via config JSON: {"stage9": {"use_frame_detection": true, "yolo_model_path": "models/yolov8n.onnx"}}
+```
+
+What to check afterwards:
+
+- Fused anomalies carry `overlapping_detections` (`frame_index`, `class_name`,
+  `confidence`, `bbox`) and `confidence_factors.detections`; anomalies with
+  no overlap are untouched (absence of a detection never lowers confidence).
+- Top-level `frame_detection`: `frames_checked`, `total_detections`,
+  `anomalies_with_overlaps`.
+- Status 2026-10-07: no real-weights run yet in this environment (no `.onnx`
+  file, no dataset here). Do not claim one until its outputs exist under
+  `output/` and are recorded in `docs/BUG_LOG.md`.
+
 > Status 2026-10-04: no real trajectory has been run in this environment yet
 > (dataset not downloaded here). The commands above are the exact,
 > verified-CLI procedure — do not claim a trajectory run until its outputs
