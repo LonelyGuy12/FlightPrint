@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
     "statistical_nb": 20,         # neighbors for statistical outlier removal
     "statistical_std": 2.0,       # std dev multiplier
     "remove_isolated": True,      # Remove points with few neighbors
-    "isolation_radius": 1.0,      # meters
+    "isolation_radius": 15.0,     # meters (adjusted for large-scale drone scenes)
     "isolation_min_neighbors": 3,
 }
 
@@ -125,13 +125,18 @@ def filter_dynamic_objects(ctx: PipelineContext, config: dict | None = None) -> 
             if colors is not None and len(colors) == len(cloud):
                 pcd2.colors = o3d.utility.Vector3dVector(colors / 255.0)
 
+            rad = max(cfg["isolation_radius"], 10.0)
             pcd2, ind = pcd2.remove_radius_outlier(
                 nb_points=cfg["isolation_min_neighbors"],
-                radius=cfg["isolation_radius"],
+                radius=rad,
             )
-            cloud = np.asarray(pcd2.points)
-            colors = (np.asarray(pcd2.colors) * 255).astype(np.uint8) if pcd2.has_colors() else None
-            log.info(f"After isolation filter: {len(cloud)} points ({before - len(cloud)} removed)")
+            # Safeguard: if isolation filter wiped out >60% of points, do not apply it
+            if len(pcd2.points) >= before * 0.4:
+                cloud = np.asarray(pcd2.points)
+                colors = (np.asarray(pcd2.colors) * 255).astype(np.uint8) if pcd2.has_colors() else None
+                log.info(f"After isolation filter: {len(cloud)} points ({before - len(cloud)} removed)")
+            else:
+                log.warning(f"Isolation filter would remove too many points ({before} -> {len(pcd2.points)}), keeping pre-isolation cloud")
 
     except ImportError:
         log.warning("Open3D not available — skipping statistical and isolation filters")

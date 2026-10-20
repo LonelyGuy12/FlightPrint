@@ -29,7 +29,8 @@ export default function App() {
   const [selectedAnomaly, setSelectedAnomaly] = useState(null);
 
   // View options
-  const [pointSize, setPointSize] = useState(2.0);
+  const [pointSize, setPointSize] = useState(2.5);
+  const [displayMode, setDisplayMode] = useState('mesh'); // 'mesh' | 'cloud' | 'wireframe' | 'hybrid'
   const [showTrajectory, setShowTrajectory] = useState(true);
   const [showAnomalies, setShowAnomalies] = useState(true);
 
@@ -128,41 +129,91 @@ export default function App() {
         setAnomalies(scene.anomalies);
       }
 
-      // Load point cloud — prefer filtered > dense > sparse
-      const cloudFiles = ['filtered_cloud.ply', 'dense_cloud.ply', 'sparse_cloud.ply'];
-      for (const cloudFile of cloudFiles) {
-        if (scene.assets?.[cloudFile]) {
-          try {
-            const plyText = await fetchFile(jobId, cloudFile);
-            const parsed = parsePLY(plyText);
-            setPointCloudData(parsed);
-            setNumPoints(parsed.vertexCount);
-            break;
-          } catch {
-            continue;
-          }
-        }
-      }
-
-      // Load mesh URL if available (PLY for vertex colors)
+      // Load mesh URL if available (PLY for vertex colors) — set this immediately!
       if (scene.assets?.['mesh.ply']) {
         const apiUrl = scene.assets['mesh.ply'].url;
         setMeshUrl(API_BASE + apiUrl);
+        setDisplayMode('mesh');
       } else {
         setMeshUrl(null);
+        setDisplayMode('cloud');
       }
 
       // Stats from report
       if (scene.report) {
         setNumFrames(scene.report.num_frames || 0);
-        if (!numPoints && scene.report.sparse_points) {
+        if (scene.report.dense_points) {
+          setNumPoints(scene.report.dense_points);
+        } else if (scene.report.sparse_points) {
           setNumPoints(scene.report.sparse_points);
         }
+      }
+
+      // Load point cloud asynchronously — prioritize clean/sparse clouds for instant interactive rendering
+      const targetCloudFile = scene.assets?.['sparse_cloud.ply']
+        ? 'sparse_cloud.ply'
+        : scene.assets?.['filtered_cloud.ply']
+        ? 'filtered_cloud.ply'
+        : scene.assets?.['dense_cloud.ply']
+        ? 'dense_cloud.ply'
+        : null;
+
+      if (targetCloudFile) {
+        fetchFile(jobId, targetCloudFile)
+          .then((plyText) => {
+            const parsed = parsePLY(plyText);
+            if (parsed && parsed.vertexCount > 0) {
+              setPointCloudData(parsed);
+              setNumPoints(parsed.vertexCount);
+            }
+          })
+          .catch((err) => {
+            console.warn('Point cloud load failed, mesh will be shown:', err);
+          });
       }
     } catch (err) {
       console.error('Failed to load results:', err);
     }
   }, [jobId]);
+
+  // ─── Initialize Active Job on Mount ───────────────────────────────
+  useEffect(() => {
+    // Only load if explicitly requested via ?jobId= in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlJobId = urlParams.get('jobId') || urlParams.get('job_id') || urlParams.get('project');
+    if (urlJobId) {
+      setJobId(urlJobId);
+    } else {
+      // Clear any stored job on fresh visit
+      localStorage.removeItem('flightprint_active_job');
+    }
+  }, []);
+
+  // When jobId is set and pipeline is not running, load results!
+  useEffect(() => {
+    if (jobId && pipelineStatus !== 'running') {
+      loadResults();
+    }
+  }, [jobId, pipelineStatus, loadResults]);
+
+  // ─── Reset to New Upload ──────────────────────────────────────────
+  const handleReset = useCallback(() => {
+    setJobId(null);
+    setPipelineStatus('idle');
+    setStageStatuses({});
+    setPointCloudData(null);
+    setMeshUrl(null);
+    setTrajectory(null);
+    setAnomalies([]);
+    setSelectedAnomaly(null);
+    setNumPoints(0);
+    setNumFrames(0);
+    setReconstructionMode(null);
+    setScaleStatus(null);
+    setModeLabel(null);
+    localStorage.removeItem('flightprint_active_job');
+    window.history.replaceState({}, '', window.location.pathname);
+  }, []);
 
   // ─── Measurement ──────────────────────────────────────────────────
   const handleMeasureClick = useCallback((point) => {
@@ -247,9 +298,19 @@ export default function App() {
         </div>
         <div className="header__status">
           {jobId && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-              Job: {jobId}
-            </span>
+            <>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                Job: {jobId}
+              </span>
+              <button
+                className="btn btn--sm btn--secondary"
+                onClick={handleReset}
+                style={{ fontSize: 11, padding: '3px 10px', height: 28 }}
+                title="Clear current model and start a new upload"
+              >
+                🔄 New Upload
+              </button>
+            </>
           )}
           <div className={`status-badge status-badge--${statusLabel}`}>
             <span className="status-badge__dot" />
@@ -270,6 +331,8 @@ export default function App() {
           uploadProgress={uploadProgress}
           pointSize={pointSize}
           onPointSizeChange={setPointSize}
+          displayMode={displayMode}
+          onDisplayModeChange={setDisplayMode}
           showTrajectory={showTrajectory}
           onToggleTrajectory={setShowTrajectory}
           showAnomalies={showAnomalies}
@@ -294,6 +357,8 @@ export default function App() {
             selectedAnomaly={selectedAnomaly}
             onSelectAnomaly={setSelectedAnomaly}
             pointSize={pointSize}
+            displayMode={displayMode}
+            onDisplayModeChange={setDisplayMode}
             measureMode={measureMode}
             measurePoints={measurePoints}
             onMeasureClick={handleMeasureClick}

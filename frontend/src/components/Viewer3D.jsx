@@ -1,14 +1,14 @@
-import { useRef, useMemo, useEffect, useCallback, Suspense } from 'react';
+import { useRef, useMemo, useEffect, useCallback, useState, Suspense } from 'react';
 import { Canvas, useFrame, useThree, useLoader } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader';
-import { parsePLY, computeBounds } from '../utils/plyParser';
+import { computeBounds } from '../utils/plyParser';
 
 /* ─── Point Cloud Object ─────────────────────────────────────────────── */
-function PointCloud({ data, pointSize = 2.0 }) {
+function PointCloud({ data, pointSize = 2.5 }) {
   const geometry = useMemo(() => {
-    if (!data) return null;
+    if (!data?.positions?.length) return null;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
     if (data.colors) {
@@ -25,17 +25,17 @@ function PointCloud({ data, pointSize = 2.0 }) {
         size={pointSize}
         sizeAttenuation={true}
         vertexColors={!!data?.colors}
-        color={data?.colors ? undefined : '#818cf8'}
+        color={data?.colors ? '#ffffff' : '#818cf8'}
         transparent
-        opacity={0.9}
+        opacity={0.92}
         depthWrite={false}
       />
     </points>
   );
 }
 
-/* ─── 3D Mesh Object (Proper Map) ────────────────────────────────────── */
-function SolidMap({ url }) {
+/* ─── 3D Solid Mesh Map ──────────────────────────────────────────────── */
+function SolidMap({ url, wireframe = false }) {
   const geometry = useLoader(PLYLoader, url);
 
   const mesh = useMemo(() => {
@@ -52,15 +52,25 @@ function SolidMap({ url }) {
 
     geom.computeVertexNormals();
     const hasColors = geom.hasAttribute('color');
+
+    if (wireframe) {
+      const material = new THREE.MeshBasicMaterial({
+        color: '#38bdf8',
+        wireframe: true,
+      });
+      return new THREE.Mesh(geom, material);
+    }
+
     const material = new THREE.MeshStandardMaterial({
       vertexColors: hasColors,
-      color: hasColors ? undefined : '#65a30d',
-      roughness: 0.8,
-      metalness: 0.05,
+      color: hasColors ? '#ffffff' : '#cbd5e1',
+      roughness: 0.65,
+      metalness: 0.15,
       side: THREE.DoubleSide,
+      flatShading: false,
     });
     return new THREE.Mesh(geom, material);
-  }, [geometry]);
+  }, [geometry, wireframe]);
 
   if (!mesh) return null;
   return <primitive object={mesh} />;
@@ -69,7 +79,7 @@ function SolidMap({ url }) {
 /* ─── Camera Trajectory Line ─────────────────────────────────────────── */
 function CameraPath({ trajectory, visible = true }) {
   const geometry = useMemo(() => {
-    if (!trajectory?.trajectory) return null;
+    if (!trajectory?.trajectory?.length) return null;
     const points = [];
     for (const entry of trajectory.trajectory) {
       if (entry.pose) {
@@ -91,26 +101,28 @@ function CameraPath({ trajectory, visible = true }) {
 
   if (!geometry || !visible) return null;
   return (
-    <line geometry={geometry}>
-      <lineBasicMaterial color="#6366f1" linewidth={2} transparent opacity={0.7} />
-    </line>
+    <group>
+      <line geometry={geometry}>
+        <lineBasicMaterial color="#a855f7" linewidth={3} transparent opacity={0.85} />
+      </line>
+    </group>
   );
 }
 
 /* ─── Anomaly Markers ────────────────────────────────────────────────── */
-function PulsingRing({ color }) {
-  const ref = useRef();
+function PulsingBeacon({ color, radius = 2.5 }) {
+  const ringRef = useRef();
   useFrame(({ clock }) => {
-    if (ref.current) {
-      const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.3;
-      ref.current.scale.set(s, s, s);
-      ref.current.material.opacity = 0.5 - Math.sin(clock.elapsedTime * 3) * 0.2;
+    if (ringRef.current) {
+      const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.4;
+      ringRef.current.scale.set(s, s, s);
+      ringRef.current.material.opacity = 0.6 - Math.sin(clock.elapsedTime * 3) * 0.3;
     }
   });
   return (
-    <mesh ref={ref}>
-      <ringGeometry args={[1.2, 1.6, 32]} />
-      <meshBasicMaterial color={color} transparent opacity={0.3} side={THREE.DoubleSide} />
+    <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]}>
+      <ringGeometry args={[radius * 0.8, radius * 1.3, 32]} />
+      <meshBasicMaterial color={color} transparent opacity={0.4} side={THREE.DoubleSide} />
     </mesh>
   );
 }
@@ -118,20 +130,43 @@ function PulsingRing({ color }) {
 function AnomalyMarkers({ anomalies, selectedIndex, onSelect, visible = true }) {
   if (!anomalies?.length || !visible) return null;
   const severityColors = { low: '#34d399', medium: '#fbbf24', high: '#f87171' };
+
   return (
     <group>
       {anomalies.map((a, i) => {
         const pos = a.position_enu;
         if (!pos) return null;
         const isSelected = selectedIndex === i;
-        const color = severityColors[a.severity] || '#818cf8';
+        const color = severityColors[a.severity] || '#f87171';
         return (
-          <group key={i} position={[pos[0], pos[1] || 0, pos[2] || 0]}>
-            <mesh onClick={(e) => { e.stopPropagation(); onSelect?.(i); }} scale={isSelected ? 1.5 : 1}>
-              <sphereGeometry args={[isSelected ? 0.8 : 0.5, 16, 16]} />
-              <meshStandardMaterial color={color} emissive={color} emissiveIntensity={isSelected ? 0.8 : 0.3} transparent opacity={0.85} />
+          <group key={a.id || i} position={[pos[0], pos[1], pos[2]]}>
+            {/* 3D Pin / Sphere */}
+            <mesh
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect?.(i);
+              }}
+              scale={isSelected ? 1.6 : 1.0}
+            >
+              <sphereGeometry args={[2.5, 24, 24]} />
+              <meshStandardMaterial
+                color={color}
+                emissive={color}
+                emissiveIntensity={isSelected ? 1.0 : 0.45}
+                roughness={0.2}
+              />
             </mesh>
-            {isSelected && <PulsingRing color={color} />}
+            {/* Ground altitude indicator line */}
+            <line>
+              <bufferGeometry
+                attach="geometry"
+                attributes={{
+                  position: new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, -25], 3),
+                }}
+              />
+              <lineBasicMaterial attach="material" color={color} transparent opacity={0.4} />
+            </line>
+            <PulsingBeacon color={color} radius={isSelected ? 4.0 : 2.5} />
           </group>
         );
       })}
@@ -143,9 +178,10 @@ function AnomalyMarkers({ anomalies, selectedIndex, onSelect, visible = true }) 
 function MeasurementLine({ points, visible }) {
   if (!visible || points.length < 2) return null;
   const geometry = useMemo(() => {
-    const pts = points.map(p => new THREE.Vector3(p[0], p[1], p[2]));
+    const pts = points.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
     return new THREE.BufferGeometry().setFromPoints(pts);
   }, [points]);
+
   return (
     <group>
       <line geometry={geometry}>
@@ -153,21 +189,16 @@ function MeasurementLine({ points, visible }) {
       </line>
       {points.map((p, i) => (
         <mesh key={i} position={p}>
-          <sphereGeometry args={[0.15, 12, 12]} />
-          <meshStandardMaterial color="#fbbf24" emissive="#fbbf24" emissiveIntensity={0.5} />
+          <sphereGeometry args={[1.0, 16, 16]} />
+          <meshStandardMaterial color="#fbbf24" emissive="#fbbf24" emissiveIntensity={0.6} />
         </mesh>
       ))}
     </group>
   );
 }
 
-/* ─── Grid Floor ─────────────────────────────────────────────────────── */
-function Grid({ size = 100 }) {
-  return <gridHelper args={[size, Math.max(10, Math.round(size / 10)), '#1e293b', '#1e293b']} position={[0, -0.01, 0]} />;
-}
-
-/* ─── Scene Controller ───────────────────────────────────────────────── */
-function SceneController({ bounds }) {
+/* ─── Scene Controller / Auto Camera ─────────────────────────────────── */
+function SceneController({ bounds, viewPreset }) {
   const { camera, controls } = useThree();
 
   useEffect(() => {
@@ -176,23 +207,35 @@ function SceneController({ bounds }) {
     const cx = bounds.center[0];
     const cy = bounds.center[1];
     const cz = bounds.center[2];
-    const d = bounds.size * 1.5;
-    
-    // Position camera dynamically based on bounds
-    camera.position.set(
-      cx + d * 0.5,
-      cz + d * 0.7,
-      -cy + d * 0.5
-    );
-    camera.near = Math.max(0.1, d * 0.001);
-    camera.far = d * 20;
+    const d = Math.min(Math.max(bounds.size * 1.3, 80), 800);
+
+    // Coordinate conversion: ENU [x, y, z] -> Three.js [x, z, -y]
+    const targetX = cx;
+    const targetY = cz;
+    const targetZ = -cy;
+
+    if (viewPreset === 'top') {
+      camera.position.set(targetX, targetY + d * 1.6, targetZ + 0.01);
+    } else if (viewPreset === 'side') {
+      camera.position.set(targetX, targetY + d * 0.3, targetZ + d * 1.3);
+    } else {
+      // 3D Isometric Orbit default
+      camera.position.set(
+        targetX + d * 0.7,
+        targetY + d * 0.9,
+        targetZ + d * 0.7
+      );
+    }
+
+    camera.near = 0.5;
+    camera.far = Math.max(d * 10, 15000);
     camera.updateProjectionMatrix();
 
     if (controls) {
-      controls.target.set(cx, cz, -cy);
+      controls.target.set(targetX, targetY, targetZ);
       controls.update();
     }
-  }, [bounds, camera, controls]);
+  }, [bounds, viewPreset, camera, controls]);
 
   return null;
 }
@@ -205,92 +248,281 @@ export default function Viewer3D({
   anomalies,
   selectedAnomaly,
   onSelectAnomaly,
-  pointSize,
+  pointSize = 2.5,
+  displayMode = 'mesh', // 'mesh' | 'cloud' | 'wireframe' | 'hybrid'
+  onDisplayModeChange,
   measureMode,
   measurePoints,
   onMeasureClick,
   showTrajectory = true,
   showAnomalies = true,
 }) {
+  const [viewPreset, setViewPreset] = useState('orbit');
+
   const bounds = useMemo(() => {
-    if (pointCloudData?.positions) {
+    if (pointCloudData?.positions?.length) {
       return computeBounds(pointCloudData.positions);
     }
-    return null;
+    // Fallback default city bounds if cloud hasn't loaded yet
+    return { center: [120, 170, -100], size: 400 };
   }, [pointCloudData]);
 
-  const handleClick = useCallback((e) => {
-    if (measureMode && e.point) {
-      onMeasureClick?.([e.point.x, e.point.y, e.point.z]);
-    }
-  }, [measureMode, onMeasureClick]);
+  const handleClick = useCallback(
+    (e) => {
+      if (measureMode && e.point) {
+        onMeasureClick?.([e.point.x, e.point.y, e.point.z]);
+      }
+    },
+    [measureMode, onMeasureClick]
+  );
 
-  if (!pointCloudData) {
+  const selectedItem = anomalies?.[selectedAnomaly];
+  const hasData = Boolean(pointCloudData?.positions?.length || meshUrl);
+
+  if (!hasData) {
     return (
       <div className="viewer__empty">
         <div className="viewer__empty-icon">🛩️</div>
         <div className="viewer__empty-text">No 3D data loaded</div>
         <div className="viewer__empty-hint">
-          Upload a drone video and run the pipeline to see results here
+          Upload a drone video and click &ldquo;Start Pipeline&rdquo; to generate the 3D map
         </div>
       </div>
     );
   }
 
-  const targetArr = bounds 
-    ? [bounds.center[0], bounds.center[2] || 0, -(bounds.center[1] || 0)]
-    : [0, 0, 0];
-
   return (
-    <Canvas
-      className="viewer__canvas"
-      camera={{ fov: 60, near: 0.1, far: 50000, position: [0, 100, 150] }}
-      gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
-      style={{ background: '#0a0e1a' }}
-      onClick={handleClick}
-    >
-      <OrbitControls
-        makeDefault
-        enableDamping
-        dampingFactor={0.08}
-        rotateSpeed={0.6}
-        panSpeed={0.8}
-        zoomSpeed={1.2}
-        minDistance={0.5}
-        maxDistance={50000}
-        target={targetArr}
-      />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {/* ── Top Floating Map Control HUD ── */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 12,
+          left: 14,
+          right: 14,
+          zIndex: 30,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          pointerEvents: 'none',
+        }}
+      >
+        <div
+          style={{
+            pointerEvents: 'auto',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            background: 'rgba(15, 23, 42, 0.88)',
+            backdropFilter: 'blur(16px)',
+            padding: '5px 10px',
+            borderRadius: 10,
+            border: '1px solid rgba(148, 163, 184, 0.18)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          }}
+        >
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 4 }}>
+            Layer:
+          </span>
+          <button
+            className={`tab ${displayMode === 'mesh' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => onDisplayModeChange?.('mesh')}
+            title="Textured 3D Buildings & Roads"
+          >
+            🏢 3D Map
+          </button>
+          <button
+            className={`tab ${displayMode === 'cloud' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => onDisplayModeChange?.('cloud')}
+            title="Dense 3D Point Cloud"
+          >
+            🌐 Point Cloud
+          </button>
+          <button
+            className={`tab ${displayMode === 'wireframe' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => onDisplayModeChange?.('wireframe')}
+            title="Architectural Wireframe Mode"
+          >
+            🔲 Wireframe
+          </button>
+          <button
+            className={`tab ${displayMode === 'hybrid' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => onDisplayModeChange?.('hybrid')}
+            title="Both 3D Map & Point Cloud"
+          >
+            ⚡ Hybrid
+          </button>
+        </div>
 
-      <SceneController bounds={bounds} />
+        {/* ── Camera Presets (Right Top) ── */}
+        <div
+          style={{
+            pointerEvents: 'auto',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            background: 'rgba(15, 23, 42, 0.88)',
+            backdropFilter: 'blur(16px)',
+            padding: '5px 8px',
+            borderRadius: 10,
+            border: '1px solid rgba(148, 163, 184, 0.18)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          }}
+        >
+          <button
+            className={`tab ${viewPreset === 'orbit' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 7px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => setViewPreset('orbit')}
+            title="Perspective Orbit View"
+          >
+            🛰️ Orbit
+          </button>
+          <button
+            className={`tab ${viewPreset === 'top' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 7px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => setViewPreset('top')}
+            title="Top-Down 2D Map View"
+          >
+            📐 Top-Down
+          </button>
+          <button
+            className={`tab ${viewPreset === 'side' ? 'tab--active' : ''}`}
+            style={{ padding: '3px 7px', fontSize: 11, borderRadius: 6 }}
+            onClick={() => setViewPreset('side')}
+            title="Street Level / Side View"
+          >
+            🏙️ Side
+          </button>
+        </div>
+      </div>
 
-      {/* Lighting */}
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[50, 80, 50]} intensity={0.6} />
-      <directionalLight position={[-30, 60, -30]} intensity={0.3} color="#818cf8" />
+      {/* ── Selected Anomaly Detail Card ── */}
+      {selectedItem && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 24,
+            left: 20,
+            zIndex: 30,
+            width: 320,
+            background: 'rgba(15, 23, 42, 0.92)',
+            backdropFilter: 'blur(20px)',
+            border: '1px solid rgba(99, 102, 241, 0.4)',
+            borderRadius: 14,
+            padding: 16,
+            boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+            animation: 'fadeIn 0.2s ease',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                padding: '2px 8px',
+                borderRadius: 4,
+                background: selectedItem.severity === 'high' ? 'rgba(248, 113, 113, 0.2)' : 'rgba(251, 191, 36, 0.2)',
+                color: selectedItem.severity === 'high' ? '#f87171' : '#fbbf24',
+              }}
+            >
+              {selectedItem.severity} severity
+            </span>
+            <button
+              onClick={() => onSelectAnomaly?.(null)}
+              style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 14 }}
+            >
+              ✕
+            </button>
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 4 }}>
+            {selectedItem.title || selectedItem.id}
+          </div>
+          <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.4, marginBottom: 10 }}>
+            {selectedItem.description}
+          </div>
+          {selectedItem.gps && (
+            <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: '#818cf8' }}>
+              📍 {selectedItem.gps.lat.toFixed(5)}°, {selectedItem.gps.lon.toFixed(5)}° (Alt {selectedItem.gps.alt}m)
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* Scene objects — ENU Z-up rotated to Three.js Y-up */}
-      <group rotation={[-Math.PI / 2, 0, 0]}>
-        {meshUrl ? (
-          <Suspense fallback={null}>
-            <SolidMap url={meshUrl} />
-          </Suspense>
-        ) : (
-          <PointCloud data={pointCloudData} pointSize={pointSize} />
-        )}
-        <CameraPath trajectory={trajectory} visible={showTrajectory} />
-        <AnomalyMarkers
-          anomalies={anomalies}
-          selectedIndex={selectedAnomaly}
-          onSelect={onSelectAnomaly}
-          visible={showAnomalies}
+      {/* ── 3D Canvas ── */}
+      <Canvas
+        className="viewer__canvas"
+        camera={{ fov: 55, near: 0.5, far: 20000, position: [180, 260, 200] }}
+        gl={{
+          antialias: true,
+          alpha: false,
+          powerPreference: 'high-performance',
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 1.15,
+        }}
+        style={{ background: '#0a0e1a' }}
+        onClick={handleClick}
+      >
+        <OrbitControls
+          makeDefault
+          enableDamping
+          dampingFactor={0.08}
+          rotateSpeed={0.7}
+          panSpeed={0.9}
+          zoomSpeed={1.2}
+          minDistance={1.0}
+          maxDistance={12000}
         />
-        <MeasurementLine points={measurePoints} visible={measureMode} />
-      </group>
 
-      <Grid size={bounds ? bounds.size * 2 : 200} />
+        <SceneController bounds={bounds} viewPreset={viewPreset} />
 
-      {/* Depth fog */}
-      <fog attach="fog" args={['#0a0e1a', bounds ? bounds.size * 3 : 200, bounds ? bounds.size * 8 : 800]} />
-    </Canvas>
+        {/* ── Modern Architectural Sun & Sky Lighting ── */}
+        <ambientLight intensity={0.8} />
+        <hemisphereLight skyColor="#b0e0e6" groundColor="#334155" intensity={0.7} />
+        <directionalLight
+          position={[bounds.center[0] + 200, bounds.center[2] + 400, -bounds.center[1] + 200]}
+          intensity={1.4}
+          color="#fffcf5"
+        />
+        <directionalLight
+          position={[bounds.center[0] - 200, bounds.center[2] + 250, -bounds.center[1] - 200]}
+          intensity={0.6}
+          color="#cce0ff"
+        />
+
+        {/* ── Scene Group: ENU Z-up mapped to Three.js Y-up ── */}
+        <group rotation={[-Math.PI / 2, 0, 0]}>
+          {/* Solid 3D Map Mesh */}
+          {(displayMode === 'mesh' || displayMode === 'wireframe' || displayMode === 'hybrid') && meshUrl && (
+            <Suspense fallback={null}>
+              <SolidMap url={meshUrl} wireframe={displayMode === 'wireframe'} />
+            </Suspense>
+          )}
+
+          {/* Dense Point Cloud */}
+          {(displayMode === 'cloud' || displayMode === 'hybrid' || !meshUrl) && (
+            <PointCloud data={pointCloudData} pointSize={pointSize} />
+          )}
+
+          {/* Camera Flight Path */}
+          <CameraPath trajectory={trajectory} visible={showTrajectory} />
+
+          {/* Anomalies */}
+          <AnomalyMarkers
+            anomalies={anomalies}
+            selectedIndex={selectedAnomaly}
+            onSelect={onSelectAnomaly}
+            visible={showAnomalies}
+          />
+
+          {/* Interactive Measurement Line */}
+          <MeasurementLine points={measurePoints} visible={measureMode} />
+        </group>
+      </Canvas>
+    </div>
   );
 }

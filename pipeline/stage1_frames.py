@@ -18,11 +18,11 @@ from .utils.io import PipelineContext
 
 DEFAULT_CONFIG = {
     "min_frame_interval_s": 0.1,    # Never extract faster than 10 fps
-    "max_frame_interval_s": 2.0,    # Never go slower than 0.5 fps
-    "target_fps": 2.0,              # Base extraction rate
-    "histogram_diff_thresh": 0.15,  # Below this = duplicate (0-1, lower=stricter)
-    "blur_thresh": 50.0,            # Laplacian variance below this = blurry
-    "optical_flow_thresh": 2.0,     # Mean flow magnitude for adaptive rate
+    "max_frame_interval_s": 0.35,   # At least ~3 fps for continuous overlap
+    "target_fps": 3.0,              # Base extraction rate (30-40 frames for 10s video)
+    "histogram_diff_thresh": 0.005, # Low thresh so similar building frames are kept
+    "blur_thresh": 2.0,             # Keep rendered and clean frames
+    "optical_flow_thresh": 1.0,     # Lower motion threshold
     "max_frames": 500,              # Hard cap for demo/memory
     "resize_for_analysis": 640,     # Resize width for flow/blur analysis (speed)
 }

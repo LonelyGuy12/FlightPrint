@@ -18,6 +18,7 @@ testing/
 MidAir/
 uploads/
 *.ply
+!assets/*.ply
 *.obj
 *.las
 *.laz

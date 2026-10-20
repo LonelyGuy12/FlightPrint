@@ -8,6 +8,13 @@ from ..controllers.pipeline_controller import pipeline_controller
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
 
+@router.get("/jobs")
+async def list_jobs():
+    """List all available jobs with reconstructions."""
+    from ..services.job_service import job_service
+    return {"jobs": job_service.list_jobs()}
+
+
 @router.post("/run/{job_id}")
 async def run_pipeline(job_id: str, request: PipelineRequest = PipelineRequest()):
     """Trigger the processing pipeline for an uploaded video.

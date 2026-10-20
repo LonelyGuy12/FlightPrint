@@ -26,14 +26,38 @@ class JobService:
         self.jobs: dict[str, dict[str, Any]] = {}
 
     def get_job(self, job_id: str) -> dict[str, Any]:
-        """Fetch job info by job_id or raise 404."""
-        if job_id not in self.jobs:
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-        return self.jobs[job_id]
+        """Fetch job info by job_id or discover from output directory."""
+        if job_id in self.jobs:
+            return self.jobs[job_id]
+
+        # Auto-discover from output directory if server restarted
+        out_dir = settings.output_dir / job_id
+        if out_dir.exists() and out_dir.is_dir():
+            job_record = {
+                "job_id": job_id,
+                "status": "completed",
+                "output_dir": str(out_dir),
+                "created_at": out_dir.stat().st_mtime,
+            }
+            self.jobs[job_id] = job_record
+            return job_record
+
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     def list_jobs(self) -> list[dict[str, Any]]:
-        """List all active jobs."""
-        return list(self.jobs.values())
+        """List all active and discovered jobs."""
+        # Discover existing output dirs
+        if settings.output_dir.exists():
+            for p in settings.output_dir.iterdir():
+                if p.is_dir() and not p.name.startswith("."):
+                    if p.name not in self.jobs:
+                        self.jobs[p.name] = {
+                            "job_id": p.name,
+                            "status": "completed",
+                            "output_dir": str(p),
+                            "created_at": p.stat().st_mtime,
+                        }
+        return sorted(list(self.jobs.values()), key=lambda j: j.get("created_at", 0), reverse=True)
 
     def update_job_status(self, job_id: str, status: str, **kwargs: Any) -> dict[str, Any]:
         """Update fields on a job record."""

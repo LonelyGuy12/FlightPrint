@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 const PIPELINE_STAGES = [
   { num: 1, name: 'Frame Extraction', key: 'frame_extraction' },
@@ -21,6 +21,8 @@ export default function Controls({
   uploadProgress,
   pointSize,
   onPointSizeChange,
+  displayMode = 'mesh',
+  onDisplayModeChange,
   showTrajectory,
   onToggleTrajectory,
   showAnomalies,
@@ -28,9 +30,15 @@ export default function Controls({
 }) {
   const [videoFile, setVideoFile] = useState(null);
   const [metaFile, setMetaFile] = useState(null);
-  const [activeTab, setActiveTab] = useState('upload');
+  const [activeTab, setActiveTab] = useState(jobId ? 'pipeline' : 'upload');
   const videoRef = useRef(null);
   const metaRef = useRef(null);
+
+  useEffect(() => {
+    if (jobId && (pipelineStatus === 'running' || pipelineStatus === 'completed' || pipelineStatus === 'partial')) {
+      setActiveTab('pipeline');
+    }
+  }, [jobId, pipelineStatus]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -257,7 +265,39 @@ export default function Controls({
       {/* View Tab */}
       {activeTab === 'view' && (
         <div className="sidebar__section" style={{ flex: 1 }}>
-          <div className="sidebar__section-title">Display Options</div>
+          <div className="sidebar__section-title">3D Map View Layer</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 16 }}>
+            <button
+              className={`btn btn--sm ${displayMode === 'mesh' ? 'btn--primary' : 'btn--secondary'}`}
+              onClick={() => onDisplayModeChange?.('mesh')}
+              style={{ justifyContent: 'center' }}
+            >
+              🏢 3D Map
+            </button>
+            <button
+              className={`btn btn--sm ${displayMode === 'cloud' ? 'btn--primary' : 'btn--secondary'}`}
+              onClick={() => onDisplayModeChange?.('cloud')}
+              style={{ justifyContent: 'center' }}
+            >
+              🌐 Point Cloud
+            </button>
+            <button
+              className={`btn btn--sm ${displayMode === 'wireframe' ? 'btn--primary' : 'btn--secondary'}`}
+              onClick={() => onDisplayModeChange?.('wireframe')}
+              style={{ justifyContent: 'center' }}
+            >
+              🔲 Wireframe
+            </button>
+            <button
+              className={`btn btn--sm ${displayMode === 'hybrid' ? 'btn--primary' : 'btn--secondary'}`}
+              onClick={() => onDisplayModeChange?.('hybrid')}
+              style={{ justifyContent: 'center' }}
+            >
+              ⚡ Hybrid
+            </button>
+          </div>
+
+          <div className="sidebar__section-title" style={{ marginTop: 12 }}>Display Options</div>
 
           <div className="slider-group">
             <span className="slider-group__label">Point Size</span>
