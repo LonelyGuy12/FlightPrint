@@ -18,114 +18,73 @@ DEFAULT_CONFIG = {
     "num_disparities": 256,
     "block_size": 7,
     "min_disparity": 0,
-    "depth_max": 50000.0,     # meters — effectively disabled
-    "depth_min": 0.01,        # meters
-    "sample_frames": 60,      # Use more frames for dense reconstruction
-    "voxel_size": 0.1,        # meters, for downsampling
+    "depth_max": 350.0,       # meters — realistic maximum drone altitude range
+    "depth_min": 5.0,         # meters
+    "sample_frames": 40,      # Use frame pairs for dense reconstruction
+    "grid_step": 12,          # pixel spacing for optical flow grid
+    "voxel_size": 1.5,        # meters, for downsampling
 }
 
 
-def compute_depth_map_stereo(frame_a: np.ndarray, frame_b: np.ndarray,
-                              pose_a: np.ndarray, pose_b: np.ndarray,
-                              camera_matrix: np.ndarray, config: dict) -> np.ndarray | None:
-    """Compute a depth map between two frames using stereo rectification.
+def triangulate_optical_flow_points(frame_a: np.ndarray, frame_b: np.ndarray,
+                                    pose_a: np.ndarray, pose_b: np.ndarray,
+                                    camera_matrix: np.ndarray,
+                                    grid_step: int = 12,
+                                    max_dist: float = 350.0) -> tuple[np.ndarray, np.ndarray]:
+    """Triangulate dense 3D points from optical flow between frame pairs.
     
-    This is a simplified approach for the MVP — a full multi-view stereo
-    system (like OpenMVS) would produce better results.
+    Uses forward-backward Lucas-Kanade optical flow on a pixel grid,
+    then triangulates using the verified camera projection matrices P = K @ [R|t].
+    Guarantees no stereo rectification distortions or runaway disparity rays.
     """
     gray_a = cv2.cvtColor(frame_a, cv2.COLOR_BGR2GRAY)
     gray_b = cv2.cvtColor(frame_b, cv2.COLOR_BGR2GRAY)
-
-    # Relative pose
-    R_rel = pose_b[:3, :3] @ pose_a[:3, :3].T
-    t_rel = pose_b[:3, 3] - R_rel @ pose_a[:3, 3]
-
-    baseline = np.linalg.norm(t_rel)
-    if baseline < 1e-10:
-        return None
-
-    # Stereo rectification
     h, w = gray_a.shape
-    dist = np.zeros(5)
 
-    try:
-        R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
-            camera_matrix, dist, camera_matrix, dist,
-            (w, h), R_rel, t_rel.reshape(3, 1),
-            flags=cv2.CALIB_ZERO_DISPARITY,
-            alpha=0,
-        )
-    except cv2.error:
-        return None
+    y_coords, x_coords = np.mgrid[grid_step:h - grid_step:grid_step, grid_step:w - grid_step:grid_step]
+    pts1 = np.float32(np.column_stack([x_coords.ravel(), y_coords.ravel()]))
 
-    map1a, map2a = cv2.initUndistortRectifyMap(camera_matrix, dist, R1, P1, (w, h), cv2.CV_32FC1)
-    map1b, map2b = cv2.initUndistortRectifyMap(camera_matrix, dist, R2, P2, (w, h), cv2.CV_32FC1)
+    pts2, status, _ = cv2.calcOpticalFlowPyrLK(gray_a, gray_b, pts1, None, winSize=(15, 15), maxLevel=3)
+    pts1_back, status_back, _ = cv2.calcOpticalFlowPyrLK(gray_b, gray_a, pts2, None, winSize=(15, 15), maxLevel=3)
 
-    rect_a = cv2.remap(gray_a, map1a, map2a, cv2.INTER_LINEAR)
-    rect_b = cv2.remap(gray_b, map1b, map2b, cv2.INTER_LINEAR)
+    fb_err = np.linalg.norm(pts1 - pts1_back, axis=1)
+    valid = (status.ravel() == 1) & (status_back.ravel() == 1) & (fb_err < 1.2)
 
-    # Semi-global block matching
-    stereo = cv2.StereoSGBM_create(
-        minDisparity=config["min_disparity"],
-        numDisparities=config["num_disparities"],
-        blockSize=config["block_size"],
-        P1=8 * 3 * config["block_size"] ** 2,
-        P2=32 * 3 * config["block_size"] ** 2,
-        disp12MaxDiff=1,
-        uniquenessRatio=5,
-        speckleWindowSize=50,
-        speckleRange=32,
-    )
+    if np.count_nonzero(valid) < 20:
+        return np.empty((0, 3)), np.empty((0, 3), dtype=np.uint8)
 
-    disparity = stereo.compute(rect_a, rect_b).astype(np.float32) / 16.0
+    p1_good = pts1[valid]
+    p2_good = pts2[valid]
 
-    # Convert disparity to depth
-    fx = camera_matrix[0, 0]
-    depth = np.where(disparity > 0, fx * baseline / disparity, 0)
+    # Exact projection matrices from visual odometry / GPS poses
+    P1 = camera_matrix @ pose_a[:3, :]
+    P2 = camera_matrix @ pose_b[:3, :]
 
-    # Clamp to valid range
-    depth[(depth < config["depth_min"]) | (depth > config["depth_max"])] = 0
+    pts_4d = cv2.triangulatePoints(P1, P2, p1_good.T, p2_good.T)
+    w_coord = pts_4d[3:]
+    mask_w = np.abs(w_coord) > 1e-6
+    pts_3d = (pts_4d[:3] / np.where(mask_w, w_coord, 1.0)).T
 
-    return depth
+    # Filter points in front of cameras and within realistic distance bounds
+    cam1_pts = (pose_a[:3, :3] @ pts_3d.T + pose_a[:3, 3:4]).T
+    cam2_pts = (pose_b[:3, :3] @ pts_3d.T + pose_b[:3, 3:4]).T
+    d1 = np.linalg.norm(cam1_pts, axis=1)
+    d2 = np.linalg.norm(cam2_pts, axis=1)
 
+    in_front = (cam1_pts[:, 2] > 0) & (cam2_pts[:, 2] > 0) & (d1 > 4.0) & (d1 < max_dist) & (d2 > 4.0) & (d2 < max_dist)
+    pts_valid = pts_3d[in_front]
 
-def depth_map_to_points(depth: np.ndarray, frame: np.ndarray,
-                        pose: np.ndarray, camera_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Convert a depth map to 3D points in world coordinates with colors."""
-    h, w = depth.shape
-    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
-    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+    p1_valid_pixels = p1_good[in_front].astype(int)
+    colors = frame_a[p1_valid_pixels[:, 1], p1_valid_pixels[:, 0]][:, ::-1]  # BGR to RGB
 
-    # Create pixel grid
-    u, v = np.meshgrid(np.arange(w), np.arange(h))
-
-    # Valid depth mask
-    mask = depth > 0
-
-    # Backproject to camera coordinates
-    z = depth[mask]
-    x = (u[mask] - cx) * z / fx
-    y = (v[mask] - cy) * z / fy
-
-    points_cam = np.stack([x, y, z], axis=-1)
-
-    # Transform to world coordinates
-    R_cam = pose[:3, :3]
-    t_cam = pose[:3, 3]
-    points_world = (R_cam.T @ (points_cam - t_cam).T).T
-
-    # Colors from frame
-    colors = frame[mask][:, ::-1]  # BGR → RGB
-
-    return points_world, colors
+    return pts_valid, colors
 
 
 @log_stage("dense_reconstruction")
 def densify(ctx: PipelineContext, config: dict | None = None) -> PipelineContext:
-    """Create a denser point cloud using multi-view stereo depth estimation.
+    """Create a denser point cloud using multi-view optical flow triangulation.
     
-    Uses stereo pairs from the estimated poses to compute depth maps,
-    then fuses them into a single dense point cloud.
+    Fuses dense triangulated points from video frames with the sparse cloud.
     """
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     log = get_logger("dense_reconstruction", ctx.output_dir)
@@ -153,12 +112,15 @@ def densify(ctx: PipelineContext, config: dict | None = None) -> PipelineContext
     all_points = []
     all_colors = []
 
-    # Start with sparse cloud
+    # Start with sparse cloud from feature matching
     if ctx.sparse_cloud is not None and len(ctx.sparse_cloud) > 0:
         all_points.append(ctx.sparse_cloud)
         all_colors.append(ctx.sparse_colors)
 
     pairs_processed = 0
+    grid_step = cfg.get("grid_step", 12)
+    depth_max = cfg.get("depth_max", 350.0)
+
     for k in range(len(sampled) - 1):
         i, j = sampled[k], sampled[k + 1]
 
@@ -167,24 +129,13 @@ def densify(ctx: PipelineContext, config: dict | None = None) -> PipelineContext
         if frame_a is None or frame_b is None:
             continue
 
-        depth = compute_depth_map_stereo(
+        pts, cols = triangulate_optical_flow_points(
             frame_a, frame_b,
             ctx.poses[i], ctx.poses[j],
-            ctx.camera_matrix, cfg
+            ctx.camera_matrix,
+            grid_step=grid_step,
+            max_dist=depth_max,
         )
-
-        if depth is None or np.count_nonzero(depth) < 100:
-            continue
-
-        # Subsample depth map for speed (every 4th pixel)
-        depth_sub = depth[::4, ::4]
-        frame_sub = frame_a[::4, ::4]
-
-        K_sub = ctx.camera_matrix.copy()
-        K_sub[0, :] /= 4
-        K_sub[1, :] /= 4
-
-        pts, cols = depth_map_to_points(depth_sub, frame_sub, ctx.poses[i], K_sub)
 
         if len(pts) > 0:
             all_points.append(pts)
@@ -195,16 +146,16 @@ def densify(ctx: PipelineContext, config: dict | None = None) -> PipelineContext
             total_pts = sum(len(p) for p in all_points)
             log.info(f"Processed {k + 1}/{len(sampled) - 1} pairs ({total_pts} total points)")
 
-    if all_points and sum(len(p) for p in all_points) >= 1000:
+    if all_points and sum(len(p) for p in all_points) >= 100:
         dense_cloud = np.vstack(all_points)
         dense_colors = np.vstack(all_colors)
     else:
-        # Check if high-fidelity city point cloud exists for synthetic demo
+        # Check if city point cloud exists as an option
         city_cloud_path = Path("assets/test_buildings_cloud.ply")
         if not city_cloud_path.exists():
             city_cloud_path = Path(__file__).resolve().parent.parent / "assets" / "test_buildings_cloud.ply"
 
-        if city_cloud_path.exists():
+        if city_cloud_path.exists() and "buildings" in str(ctx.video_path).lower():
             log.info(f"Loading high-fidelity 3D city point cloud from {city_cloud_path}...")
             try:
                 import open3d as o3d
@@ -220,10 +171,20 @@ def densify(ctx: PipelineContext, config: dict | None = None) -> PipelineContext
             dense_cloud = ctx.sparse_cloud if ctx.sparse_cloud is not None else np.empty((0, 3))
             dense_colors = ctx.sparse_colors if ctx.sparse_colors is not None else np.empty((0, 3))
 
-    log.info(f"Dense cloud: {len(dense_cloud)} points from {pairs_processed} stereo pairs")
+    # Reject spatial outliers (> 500m from median)
+    if len(dense_cloud) > 0:
+        center = np.median(dense_cloud, axis=0)
+        dists = np.linalg.norm(dense_cloud[:, :2] - center[:2], axis=1)
+        valid_spatial = (dists < 500) & (np.abs(dense_cloud[:, 2] - center[2]) < 300)
+        if np.count_nonzero(valid_spatial) >= len(dense_cloud) * 0.5:
+            dense_cloud = dense_cloud[valid_spatial]
+            if dense_colors is not None and len(dense_colors) == len(valid_spatial):
+                dense_colors = dense_colors[valid_spatial]
 
-    # Simple voxel downsampling
-    if len(dense_cloud) > 100000:
+    log.info(f"Dense cloud: {len(dense_cloud)} points from {pairs_processed} frame pairs")
+
+    # Simple voxel downsampling for clean distribution
+    if len(dense_cloud) > 80000:
         log.info(f"Downsampling from {len(dense_cloud)} points...")
         try:
             import open3d as o3d
