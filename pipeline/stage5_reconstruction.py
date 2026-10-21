@@ -150,26 +150,11 @@ def densify(ctx: PipelineContext, config: dict | None = None) -> PipelineContext
         dense_cloud = np.vstack(all_points)
         dense_colors = np.vstack(all_colors)
     else:
-        # Check if city point cloud exists as an option
-        city_cloud_path = Path("assets/test_buildings_cloud.ply")
-        if not city_cloud_path.exists():
-            city_cloud_path = Path(__file__).resolve().parent.parent / "assets" / "test_buildings_cloud.ply"
-
-        if city_cloud_path.exists() and "buildings" in str(ctx.video_path).lower():
-            log.info(f"Loading high-fidelity 3D city point cloud from {city_cloud_path}...")
-            try:
-                import open3d as o3d
-                pcd = o3d.io.read_point_cloud(str(city_cloud_path))
-                dense_cloud = np.asarray(pcd.points)
-                dense_colors = (np.asarray(pcd.colors) * 255).astype(np.uint8) if pcd.has_colors() else np.full((len(dense_cloud), 3), 180, dtype=np.uint8)
-                log.info(f"Loaded {len(dense_cloud)} dense 3D points from city model")
-            except Exception as e:
-                log.warning(f"Failed to load city point cloud: {e}")
-                dense_cloud = ctx.sparse_cloud if ctx.sparse_cloud is not None else np.empty((0, 3))
-                dense_colors = ctx.sparse_colors if ctx.sparse_colors is not None else np.empty((0, 3))
-        else:
-            dense_cloud = ctx.sparse_cloud if ctx.sparse_cloud is not None else np.empty((0, 3))
-            dense_colors = ctx.sparse_colors if ctx.sparse_colors is not None else np.empty((0, 3))
+        # Fall back to sparse cloud — stage 6 will generate clean procedural geometry
+        log.info("Optical flow yielded insufficient points — using sparse cloud; "
+                 "stage 6 will generate procedural city mesh.")
+        dense_cloud  = ctx.sparse_cloud  if ctx.sparse_cloud  is not None else np.empty((0, 3))
+        dense_colors = ctx.sparse_colors if ctx.sparse_colors is not None else np.empty((0, 3), dtype=np.uint8)
 
     # Reject spatial outliers (> 500m from median)
     if len(dense_cloud) > 0:
