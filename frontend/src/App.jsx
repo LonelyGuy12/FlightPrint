@@ -1,4 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import * as THREE from 'three';
+import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader';
+import { computeBounds } from './utils/plyParser';
 import Viewer3D from './components/Viewer3D';
 import Controls from './components/Controls';
 import AnomalyPanel from './components/AnomalyPanel';
@@ -47,6 +52,10 @@ export default function App() {
   const [reconstructionMode, setReconstructionMode] = useState(null);
   const [scaleStatus, setScaleStatus] = useState(null);
   const [modeLabel, setModeLabel] = useState(null);
+
+  // UI state
+  const [activeView, setActiveView] = useState('overview'); // 'overview' | 'reconstruction' | 'anomaly' | 'reports'
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const pollRef = useRef(null);
 
@@ -211,6 +220,7 @@ export default function App() {
     setReconstructionMode(null);
     setScaleStatus(null);
     setModeLabel(null);
+    setActiveView('overview');
     localStorage.removeItem('flightprint_active_job');
     window.history.replaceState({}, '', window.location.pathname);
   }, []);
@@ -285,133 +295,236 @@ export default function App() {
     : reconstructionMode === 'vision_only' ? 'mode-banner--vision'
     : null;
 
-  return (
-    <div className="app">
-      {/* Header */}
-      <header className="header">
-        <div className="header__brand">
-          <div className="header__logo">✈️</div>
-          <div>
-            <div className="header__title">FlightPrint</div>
-            <div className="header__subtitle">3D Drone Reconstruction</div>
-          </div>
-        </div>
-        <div className="header__status">
-          {jobId && (
-            <>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                Job: {jobId}
-              </span>
-              <button
-                className="btn btn--sm btn--secondary"
-                onClick={handleReset}
-                style={{ fontSize: 11, padding: '3px 10px', height: 28 }}
-                title="Clear current model and start a new upload"
-              >
-                🔄 New Upload
-              </button>
-            </>
-          )}
-          <div className={`status-badge status-badge--${statusLabel}`}>
-            <span className="status-badge__dot" />
-            {statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1)}
-          </div>
-        </div>
-      </header>
-
-      {/* Main */}
-      <div className="main">
-        {/* Left Sidebar — Controls */}
-        <Controls
-          onUpload={handleUpload}
-          onStartPipeline={handleStartPipeline}
-          jobId={jobId}
-          pipelineStatus={pipelineStatus}
-          stageStatuses={stageStatuses}
-          uploadProgress={uploadProgress}
-          pointSize={pointSize}
-          onPointSizeChange={setPointSize}
-          displayMode={displayMode}
-          onDisplayModeChange={setDisplayMode}
-          showTrajectory={showTrajectory}
-          onToggleTrajectory={setShowTrajectory}
-          showAnomalies={showAnomalies}
-          onToggleAnomalies={setShowAnomalies}
-        />
-
-        {/* 3D Viewer */}
-        <div className="viewer">
-          {modeBannerClass && (
-            <div className={`mode-banner ${modeBannerClass}`}>
-              <span className="mode-banner__icon">
-                {reconstructionMode === 'full' ? '🌍' : reconstructionMode === 'scale_assisted' ? '📐' : '👁️'}
-              </span>
-              <span className="mode-banner__text">{modeLabel}</span>
-            </div>
-          )}
-          <Viewer3D
-            pointCloudData={pointCloudData}
-            meshUrl={meshUrl}
-            trajectory={trajectory}
-            anomalies={anomalies}
-            selectedAnomaly={selectedAnomaly}
-            onSelectAnomaly={setSelectedAnomaly}
-            pointSize={pointSize}
-            displayMode={displayMode}
-            onDisplayModeChange={setDisplayMode}
-            measureMode={measureMode}
-            measurePoints={measurePoints}
-            onMeasureClick={handleMeasureClick}
-            showTrajectory={showTrajectory}
-            showAnomalies={showAnomalies}
-          />
-          <MeasureTool
-            measureMode={measureMode}
-            onToggle={toggleMeasure}
-            measurePoints={measurePoints}
-            distance={distance}
-            isMetric={isMetric}
-            onApplyScale={handleApplyScale}
-          />
-        </div>
-
-        {/* Right Sidebar — Anomalies */}
-        {anomalies.length > 0 && (
-          <div className="sidebar" style={{ width: 280, borderRight: 'none', borderLeft: '1px solid var(--border-subtle)' }}>
-            <AnomalyPanel
-              anomalies={anomalies}
-              selectedIndex={selectedAnomaly}
-              onSelect={setSelectedAnomaly}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Stats Bar */}
-      <div className="stats-bar">
-        <div className="stat-item">
-          📐 Points: <span className="stat-item__value">{numPoints.toLocaleString()}</span>
-        </div>
-        <div className="stat-item">
-          🖼️ Frames: <span className="stat-item__value">{numFrames}</span>
-        </div>
-        <div className="stat-item">
-          🔍 Anomalies: <span className="stat-item__value">{anomalies.length}</span>
-        </div>
-        {distance !== null && (
-          <div className="stat-item">
-            📏 Distance: <span className="stat-item__value">
-              {distance.toFixed(2)}{distanceUnit}
-              {!isMetric && ' (relative)'}
-            </span>
-          </div>
-        )}
-        {reconstructionMode && (
-          <div className="stat-item" style={{ marginLeft: 'auto' }}>
-            🔧 Mode: <span className="stat-item__value">{reconstructionMode}</span>
-          </div>
-        )}
+  // Top bar right-side status
+  const rightStatus = jobId ? (
+    <div className="header__right">
+      <div className="status-bar">
+        <span style={{ fontSize: 11, color: 'var(--text-caption)', fontFamily: 'var(--font-mono)' }}>
+          Job: {jobId}
+        </span>
+        <StatusBadge status={pipelineStatus} />
+        <button
+          className="btn btn--sm btn--secondary"
+          onClick={handleReset}
+          title="Clear current model and start a new upload"
+        >
+          🔄 New Upload
+        </button>
       </div>
     </div>
+  ) : (
+    <div className="header__right">
+      <button
+        className="btn btn--sm btn--primary"
+        onClick={() => setActiveView('overview')}
+        style={{ padding: '6px 12px', fontSize: 12 }}
+        title="Mission Overview"
+      >
+        Overview
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="app">
+      {/* ─── Top Status Bar ───────────────────────────────────────────── */}
+      <header className="header">
+        {/* Left: Brand & Navigation */}
+        <div className="header__left">
+          <div className="header__brand">
+            <div className="header__logo">FP</div>
+            <div>
+              <div className="header__title">FlightPrint</div>
+              <div className="header__subtitle">3D Drone Reconstruction</div>
+            </div>
+          </div>
+          <div className="header__nav">
+            <div className="header__nav-item">Navigation</div>
+          </div>
+        </div>
+
+        {/* Center: Mode Banner */}
+        {modeBannerClass && (
+          <div className={`mode-banner ${modeBannerClass}`}>
+            <span className="mode-banner__icon">
+              {reconstructionMode === 'full' ? '🌍' : reconstructionMode === 'scale_assisted' ? '📐' : '👁️'}
+            </span>
+            <span className="mode-banner__text">{modeLabel}</span>
+          </div>
+        )}
+
+        {/* Right: Status & Controls */}
+        {rightStatus}
+      </header>
+
+      {/* ─── Main Content Area ────────────────────────────────────────── */}
+      <main className="main">
+        <div className="content">
+
+          {/* ─── Left Navigation Rail ───────────────────────────────────── */}
+          <aside className="sidebar">
+            <div className="sidebar__brand">FP</div>
+
+            <nav className="sidebar__nav">
+              <button
+                className={`sidebar__nav-btn ${activeView === 'overview' ? 'sidebar__nav-btn--active' : ''}`}
+                onClick={() => setActiveView('overview')}
+                title="Mission Overview"
+              >
+                <span className="sidebar__nav-title">📊</span>
+              </button>
+
+              <button
+                className={`sidebar__nav-btn ${activeView === 'reconstruction' ? 'sidebar__nav-btn--active' : ''}`}
+                onClick={() => setActiveView('reconstruction')}
+                title="Reconstruction Workspace"
+              >
+                <span className="sidebar__nav-title">🛰️</span>
+              </button>
+
+              <button
+                className={`sidebar__nav-btn ${activeView === 'anomaly' ? 'sidebar__nav-btn--active' : ''}`}
+                onClick={() => setActiveView('anomaly')}
+                title="Anomaly Investigation"
+              >
+                <span className="sidebar__nav-title">🔍</span>
+              </button>
+
+              <button
+                className={`sidebar__nav-btn ${activeView === 'reports' ? 'sidebar__nav-btn--active' : ''}`}
+                onClick={() => setActiveView('reports')}
+                title="Evidence & Reports"
+              >
+                <span className="sidebar__nav-title">📄</span>
+              </button>
+            </nav>
+          </aside>
+
+          {/* ─── Content Area ───────────────────────────────────────────── */}
+          <div className="viewport-wrapper">
+            {/* ─── Pipeline Stage Monitor (showing when job exists) ─────────── */}
+            {jobId && (
+              <div className="pipeline-overview">
+                {Object.keys(stageStatuses).length > 0 && (
+                  <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+                    {[
+                      'frame_extraction', 'camera_calibration', 'feature_detection',
+                      'pose_estimation', 'dense_reconstruction', 'meshing',
+                      'georeferencing', 'dynamic_filtering', 'ai_agent'
+                    ].map((key, i) => {
+                      const st = stageStatuses[key];
+                      const status = st?.status || 'pending';
+                      const stageNames = {
+                        'frame_extraction': '1. Frames',
+                        'camera_calibration': '2. Calib',
+                        'feature_detection': '3. Features',
+                        'pose_estimation': '4. Poses',
+                        'dense_reconstruction': '5. Dense',
+                        'meshing': '6. Mesh',
+                        'georeferencing': '7. Geo',
+                        'dynamic_filtering': '8. Filter',
+                        'ai_agent': '9. AI',
+                      };
+                      return (
+                        <div
+                          key={key}
+                          className={`pipeline-stage ${status === 'running' ? 'pipeline-stage--running' : status === 'completed' ? 'pipeline-stage--completed' : status === 'failed' ? 'pipeline-stage--failed' : 'pipeline-stage--pending'}`}
+                        >
+                          {stageNames[key]}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ─── Screen Content Based on Active View ─────────────────────── */}
+            {activeView === 'overview' && (
+              <OverviewScreen
+                jobId={jobId}
+                pipelineStatus={pipelineStatus}
+                stageStatuses={stageStatuses}
+                numPoints={numPoints}
+                numFrames={numFrames}
+                anomalies={anomalies}
+                selectedAnomaly={selectedAnomaly}
+                onSelectAnomaly={setSelectedAnomaly}
+                onStartPipeline={handleStartPipeline}
+                onUpload={handleUpload}
+                onReset={handleReset}
+              />
+            )}
+
+            {activeView === 'reconstruction' && (
+              <ReconstructionScreen
+                jobId={jobId}
+                pipelineStatus={pipelineStatus}
+                stageStatuses={stageStatuses}
+                pointCloudData={pointCloudData}
+                meshUrl={meshUrl}
+                trajectory={trajectory}
+                anomalies={anomalies}
+                selectedAnomaly={selectedAnomaly}
+                onSelectAnomaly={setSelectedAnomaly}
+                onStartPipeline={handleStartPipeline}
+                onDisplayModeChange={setDisplayMode}
+                onPointSizeChange={setPointSize}
+                onToggleTrajectory={setShowTrajectory}
+                onToggleAnomalies={setShowAnomalies}
+                onMeasureClick={handleMeasureClick}
+                toggleMeasure={toggleMeasure}
+                applyScale={handleApplyScale}
+                numPoints={numPoints}
+                numFrames={numFrames}
+                reconstructionMode={reconstructionMode}
+                displayMode={displayMode}
+                showTrajectory={showTrajectory}
+                showAnomalies={showAnomalies}
+              />
+            )}
+
+            {activeView === 'anomaly' && (
+              <AnomalyInvestigationScreen
+                jobId={jobId}
+                pipelineStatus={pipelineStatus}
+                stageStatuses={stageStatuses}
+                anomalies={anomalies}
+                selectedAnomaly={selectedAnomaly}
+                onSelectAnomaly={setSelectedAnomaly}
+                onStartPipeline={handleStartPipeline}
+                onDisplayModeChange={setDisplayMode}
+                onPointSizeChange={setPointSize}
+              />
+            )}
+
+            {activeView === 'reports' && (
+              <EvidenceReportsScreen
+                jobId={jobId}
+                pipelineStatus={pipelineStatus}
+                stageStatuses={stageStatuses}
+                anomalies={anomalies}
+                selectedAnomaly={selectedAnomaly}
+                onSelectAnomaly={setSelectedAnomaly}
+                onStartPipeline={handleStartPipeline}
+                reconstructionMode={reconstructionMode}
+                scaleStatus={scaleStatus}
+                modeLabel={modeLabel}
+              />
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/* ─── Status Badge Component ──────────────────────────────────────────── */
+function StatusBadge({ status }) {
+  return (
+    <span className={`status-badge status-badge--${status}`}>
+      <span className="status-badge__dot" />
+      {status.charAt(0).toUpperCase() + status.slice(1)}
+    </span>
   );
 }
