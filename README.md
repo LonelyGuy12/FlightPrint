@@ -1,112 +1,217 @@
 # 🛩️ FlightPrint
 
-**AI-powered 3D reconstruction from drone video** — reconstruct georeferenced, textured 3D models from a single-pass drone flight.
+**AI-powered 3D reconstruction from drone video** — reconstruct georeferenced, structured 3D models and detect anomalies from a single-pass drone flight.
 
-## Quick Start
+---
 
-```bash
-# Install Python dependencies
-pip install -r requirements.txt
+## 🌟 Key Features
 
-# Sanity checks: OpenCV 5 (competition rule) + test suite
-python -c "import cv2; print(cv2.__version__)"  # expect 5.x
-python -m pytest tests/ -v
+- **Single-Pass 3D Reconstruction**: Estimates camera intrinsics, poses, and dense point clouds from aerial drone video and GPS/IMU telemetry.
+- **Dynamic 3D City Meshing**: Procedurally generates structured building geometry, textured rooftops, facades, and road networks aligned with flight telemetry without requiring pre-baked assets.
+- **Georeferencing & Filtering**: WGS84 to UTM coordinate mapping, camera trajectory alignment, and dynamic outlier filtering.
+- **AI-Powered Anomaly & Threat Detection**: Detects geometric anomalies fused with Amazon Bedrock (Amazon Nova Pro) visual reasoning and YOLOv8 object detection.
+- **Interactive 3D Web Viewer**: High-performance Three.js/React-Three-Fiber frontend with orbit controls, point cloud vs. mesh toggles, trajectory overlays, and telemetry inspection.
 
-# Run the backend
-cd backend
-uvicorn app.main:app --reload --port 8000
+---
 
-# Run the frontend (separate terminal)
-cd frontend
-npm install && npm run dev
+## 🏗️ Architecture & Pipeline
+
 ```
-
-## Configuration
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `BEDROCK_MODEL_ID` | `amazon.nova-pro-v1:0` | Vision model for the Stage 9 visual check |
-| `AWS_REGION` | `us-east-1` | AWS region for Bedrock (needs model access) |
-| `FLIGHTPRINT_USE_BEDROCK` | off | Set to `1` to enable the Stage 9 visual check without a config file |
-| `YOLO_MODEL_PATH` | _(empty)_ | Path to YOLOv5/YOLOv8 `.onnx` weights for Stage 9 frame detection |
-| `FLIGHTPRINT_USE_DETECTION` | off | Set to `1` to enable Stage 9 frame detection without a config file |
-
-The Stage 9 Bedrock visual check is **off by default** (no surprise AWS calls).
-Enable it for one run with any of:
-
-```bash
-# CLI flag
-python -m pipeline.cli --video <video.mp4> --metadata <metadata.json> --output <out> --bedrock
-
-# Config JSON: {"stage9": {"use_bedrock": true}}
-python -m pipeline.cli --video <video.mp4> --metadata <metadata.json> --output <out> --config bedrock.json
-
-# API: POST /api/pipeline/run/{job_id} with {"config": {"stage9": {"use_bedrock": true}}}
+Drone Video (MP4) + Telemetry (GPS / IMU JSON)
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ Stage 1: Frame Extraction (Adaptive sampling & dedup)   │
+│ Stage 2: Camera Calibration (Intrinsics estimation)     │
+│ Stage 3: Feature Detection (SIFT / ORB matching)        │
+│ Stage 4: Pose Estimation (Essential matrix + GPS fusion)│
+│ Stage 5: Dense Reconstruction (Optical-flow triangulation)
+│ Stage 6: 3D Meshing (Procedural structured city mesh)   │
+│ Stage 7: Georeferencing (WGS84 / UTM coordinate mapping)│
+│ Stage 8: Filtering (Dynamic outlier & noise rejection)  │
+│ Stage 9: AI Agent (Bedrock Nova Pro + YOLO detection)   │
+│ Stage 10: Web Delivery (Interactive 3D viewer & report) │
+└─────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+   FastAPI Backend (8000) ──► React / Three.js Frontend (5173)
 ```
-
-At most the top 10 anomalies per run are sent to Bedrock (see
-`max_bedrock_anomalies`). Each checked anomaly gets `visual_assessment`
-(`label`, `description`, `confidence`, `model`) in `anomaly_report.json`;
-failed checks keep the geometric result with a `visual_assessment_error` note.
-
-Stage 9 frame object detection (YOLO via OpenCV DNN, any 80-class COCO
-`.onnx` — weights not in the repo) is likewise **off by default**:
-
-```bash
-python -m pipeline.cli --video <video.mp4> --metadata <metadata.json> --output <out> --detect --yolo-model models/yolov8n.onnx
-# Or config JSON: {"stage9": {"use_frame_detection": true, "yolo_model_path": "models/yolov8n.onnx"}}
-```
-
-Fused anomalies get `overlapping_detections` plus a `detections` confidence
-factor; anomalies with no overlap are untouched.
-
-## Testing & docs
-
-- `docs/TEST_PLAN.md` — environment, Mid-Air data, Stage 1–9 and Bedrock
-  procedures, expected outputs, pass/fail criteria.
-- `docs/BUG_LOG.md` — observed issues only, with reproduction and status.
-- `tools/README.md` — Mid-Air adapter usage plus test-data layout and where
-  `anomaly_report.json` / `evidence/` outputs land.
-
-## Pipeline
 
 | Stage | Description | Status |
 |-------|-------------|--------|
-| 1. Frame Extraction | Adaptive sampling + deduplication | ✅ |
-| 2. Camera Calibration | Intrinsics from metadata or estimation | ✅ |
-| 3. Feature Detection | SIFT/ORB matching across frames | ✅ |
-| 4. Pose Estimation | Essential matrix + GPS/IMU fusion | ✅ |
-| 5. Triangulation | Sparse → dense point cloud | 🔄 |
-| 6. Meshing | Poisson surface reconstruction | 🔄 |
-| 7. Georeferencing | WGS84/UTM transform | 🔄 |
-| 8. Filtering | Dynamic object removal | 🔄 |
-| 9. AI Agent | Anomaly detection & scene understanding | 🔄 |
-| 10. Delivery | Interactive web viewer | 🔄 |
+| **1. Frame Extraction** | Adaptive sampling, keyframe selection, deduplication | ✅ Complete |
+| **2. Camera Calibration** | Focal length, principal point, and distortion estimation | ✅ Complete |
+| **3. Feature Detection** | SIFT/ORB feature extraction and cross-frame matching | ✅ Complete |
+| **4. Pose Estimation** | Essential matrix estimation, RANSAC, GPS/IMU trajectory fusion | ✅ Complete |
+| **5. Triangulation & Dense Cloud** | Optical flow triangulation + sparse cloud fusion | ✅ Complete |
+| **6. 3D Meshing** | High-fidelity procedural building geometry, facades & terrain | ✅ Complete |
+| **7. Georeferencing** | WGS84 to UTM coordinate transforms & GPS registration | ✅ Complete |
+| **8. Filtering** | Statistical outlier removal and dynamic object filtering | ✅ Complete |
+| **9. AI Agent & Vision** | Geometric anomaly detection + Amazon Bedrock + YOLOv8 | ✅ Complete |
+| **10. Web Viewer** | Real-time interactive 3D WebGL viewer & inspection dashboard | ✅ Complete |
 
-## Architecture
+---
 
+## 🚀 Quick Start: Running Backend & Web Server
+
+### Prerequisites
+
+- **Python 3.10+** (OpenCV 5.x or 4.8+)
+- **Node.js 18+** & **npm**
+
+---
+
+### Step 1: Environment & Python Setup
+
+Clone the repository and set up a Python virtual environment:
+
+```bash
+git clone https://github.com/LonelyGuy12/FlightPrint.git
+cd FlightPrint
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate   # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
-Drone Video + GPS/IMU → Frame Extraction → Feature Matching → Pose Estimation
-    → Triangulation → Meshing → Georeferencing → AI Analysis → Web Viewer
+
+Verify your setup:
+```bash
+python -c "import cv2; print('OpenCV version:', cv2.__version__)"
+python -m pytest tests/ -v
 ```
 
-## Input Format
+---
 
-- **Video**: MP4 (1080p or 4K)
-- **Metadata JSON**:
+### Step 2: Start the Backend Server
+
+The backend runs on **FastAPI** with **Uvicorn**:
+
+```bash
+# Make sure your virtual environment is active
+source .venv/bin/activate
+
+# Navigate to backend directory and start Uvicorn
+cd backend
+uvicorn app.main:app --reload --port 8000
+```
+
+- **Backend API URL**: `http://localhost:8000`
+- **Interactive Swagger Docs**: `http://localhost:8000/docs`
+- **Health Check / Jobs**: `http://localhost:8000/api/pipeline/jobs`
+
+---
+
+### Step 3: Start the Frontend Web Server
+
+In a **separate terminal window**, launch the Vite-powered React web application:
+
+```bash
+cd FlightPrint/frontend
+
+# Install frontend dependencies (first time only)
+npm install
+
+# Start Vite development server
+npm run dev
+```
+
+- **Web Application URL**: `http://localhost:5173`
+- The viewer connects directly to the backend at `http://localhost:8000`.
+
+---
+
+## 💻 Running the Reconstruction Pipeline
+
+### Option A: Using the Web UI (Recommended)
+1. Open `http://localhost:5173` in your browser.
+2. Upload your drone video (`.mp4`) and flight telemetry (`metadata.json`).
+3. Click **Start Pipeline**.
+4. Monitor live stage-by-stage progress and explore the rendered 3D scene in the interactive viewer once complete.
+
+### Option B: Using the CLI
+You can also run the full pipeline directly from the command line:
+
+```bash
+source .venv/bin/activate
+
+# Basic run
+python -m pipeline.cli \
+  --video data/sample_flight.mp4 \
+  --metadata data/flight_metadata.json \
+  --output backend/output/demo_run
+
+# With Amazon Bedrock AI anomaly assessment enabled:
+python -m pipeline.cli \
+  --video data/sample_flight.mp4 \
+  --metadata data/flight_metadata.json \
+  --output backend/output/demo_run \
+  --bedrock
+```
+
+---
+
+## ⚙️ Configuration & AI Models
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `BEDROCK_MODEL_ID` | `amazon.nova-pro-v1:0` | Amazon Bedrock vision model ID for Stage 9 anomaly assessment |
+| `AWS_REGION` | `us-east-1` | AWS Region for Amazon Bedrock service |
+| `FLIGHTPRINT_USE_BEDROCK` | `0` (off) | Set to `1` to enable Bedrock multimodal checks by default |
+| `YOLO_MODEL_PATH` | _(empty)_ | File path to YOLOv5/YOLOv8 `.onnx` model weights |
+| `FLIGHTPRINT_USE_DETECTION` | `0` (off) | Set to `1` to enable YOLOv8 frame detection by default |
+
+### Stage 9: Amazon Bedrock Vision Check
+Stage 9 inspects the reconstructed scene for anomalies. When enabled with `--bedrock` (or `FLIGHTPRINT_USE_BEDROCK=1`), detected anomaly crops are sent to Amazon Bedrock Nova Pro for semantic identification:
+- Produces `visual_assessment` tags (`label`, `description`, `confidence`).
+- Stored directly in `output/<job_id>/anomaly_report.json`.
+
+### Stage 9: YOLO Frame Detection
+Stage 9 can run real-time COCO-80 object detection via OpenCV DNN:
+```bash
+python -m pipeline.cli --video flight.mp4 --metadata meta.json --output out/ --detect --yolo-model models/yolov8n.onnx
+```
+
+---
+
+## 📁 Input Metadata Format
+
+FlightPrint uses synchronization between video frames and GPS/IMU telemetry:
+
 ```json
 {
-  "gps_track": [
-    {"timestamp": 0.0, "lat": 37.7749, "lon": -122.4194, "alt": 100.0}
-  ],
   "camera": {
-    "focal_length_mm": 24,
+    "focal_length_mm": 24.0,
     "sensor_width_mm": 13.2,
     "image_width": 1920,
     "image_height": 1080
   },
+  "gps_track": [
+    {"timestamp": 0.0, "lat": 37.7749, "lon": -122.4194, "alt": 100.0},
+    {"timestamp": 1.0, "lat": 37.7751, "lon": -122.4192, "alt": 100.5}
+  ],
   "imu": [
-    {"timestamp": 0.0, "roll": 0.1, "pitch": -0.05, "yaw": 45.2}
+    {"timestamp": 0.0, "roll": 0.1, "pitch": -0.05, "yaw": 45.2},
+    {"timestamp": 1.0, "roll": 0.12, "pitch": -0.04, "yaw": 45.8}
   ]
 }
 ```
+
+---
+
+## 🧪 Testing & Verification
+
+Run the automated test suite across all pipeline stages:
+
+```bash
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+Additional documentation:
+- `docs/TEST_PLAN.md` — Test procedures, environment setup, Mid-Air benchmark evaluation.
+- `docs/BUG_LOG.md` — Observed issues and tracked resolutions.
+- `tools/README.md` — Mid-Air dataset adapter and synthetic test tools.
