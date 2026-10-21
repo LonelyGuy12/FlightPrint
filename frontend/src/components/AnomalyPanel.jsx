@@ -29,7 +29,7 @@ export default function AnomalyPanel({ anomalies, selectedIndex, onSelect }) {
     <div className="anomaly-panel" style={{
       padding: '12px 16px',
       borderRadius: 12,
-      background: var(--bg-elevated),
+      background: "var(--bg-elevated)",
       border: '1px solid var(--border-subtle)',
     }}>
       <div style={{
@@ -52,7 +52,7 @@ export default function AnomalyPanel({ anomalies, selectedIndex, onSelect }) {
           style={{
             margin: '4px 12px',
             padding: '10px 12px',
-            background: var(--bg-elevated),
+            background: "var(--bg-elevated)",
             border: '1px solid var(--border-subtle)',
             borderRadius: 12,
             cursor: 'pointer',

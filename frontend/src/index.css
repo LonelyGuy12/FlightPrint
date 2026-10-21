@@ -89,7 +89,7 @@ html, body, #root {
   align-items: center;
   justify-content: space-between;
   padding: 0 20px;
-  height 56px;
+  height: 56px;
   background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
   border-bottom: 1px solid var(--border-subtle);
   z-index: 100;
