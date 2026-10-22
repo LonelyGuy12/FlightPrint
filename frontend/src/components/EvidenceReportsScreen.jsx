@@ -60,7 +60,6 @@ export default function EvidenceReportsScreen({
       <div className="evidence-reports-screen">
         <div style={{
           padding: 60px 40px, textAlign: 'center',
-          color: 'var(--text-caption)',
         }}>
           <div style={{ fontSize: 48, opacity: 0.3, marginBottom: 16 }}>📄</div>
           <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>No Report Available</h2>
@@ -145,7 +144,7 @@ export default function EvidenceReportsScreen({
                 <div style={{ fontSize: 13, color: scaleStatus === 'metric_georeferenced' ? '#6DD5FA' : scaleStatus === 'metric_approximate' ? '#FFB547' : 'var(--text-caption)' }}>{scaleStatus || '—'}</div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Frames Processed</div>
+                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }>Frames Processed</div>
                 <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{report.num_frames || 0}</div>
               </div>
             </div>

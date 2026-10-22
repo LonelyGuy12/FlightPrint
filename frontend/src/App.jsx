@@ -8,6 +8,10 @@ import Viewer3D from './components/Viewer3D';
 import Controls from './components/Controls';
 import AnomalyPanel from './components/AnomalyPanel';
 import MeasureTool from './components/MeasureTool';
+import OverviewScreen from './components/OverviewScreen';
+import ReconstructionScreen from './components/ReconstructionScreen';
+import AnomalyInvestigationScreen from './components/AnomalyInvestigationScreen';
+import EvidenceReportsScreen from './components/EvidenceReportsScreen';
 import { parsePLY } from './utils/plyParser';
 import {
   uploadFiles,
