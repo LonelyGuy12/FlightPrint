@@ -63,7 +63,7 @@ export default function AnomalyPanel({ anomalies, selectedIndex, onSelect }) {
             display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
           }}>
             <div className={`anomaly-card__severity anomaly-card__severity--${a.severity || 'low'}}`
-              style={{ width: 6, height: 6, borderRadius: 50, flexShrink: 0 }}
+              style={{ width: 6, height: 6, borderRadius: 50 }}
             />
             <span className="anomaly-card__type"
               style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)', flex: 1 }}
