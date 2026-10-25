@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import api from '../utils/api';
 
 /* ─── Mission Overview Screen ────────────────────────────────────────────
      Answers four questions:
@@ -24,9 +25,8 @@ export default function OverviewScreen({
   // List recent jobs from the backend
   const [recentJobs, setRecentJobs] = useState([]);
   useEffect(() => {
-    fetch('/api/upload/jobs')
-      .then((res) => res.json())
-      .then((data) => setRecentJobs(data.jobs || []))
+    api.get('/api/upload/jobs')
+      .then(({ data }) => setRecentJobs(Array.isArray(data) ? data : data.jobs || []))
       .catch(() => []);
   }, [jobId]);
 
@@ -59,7 +59,7 @@ export default function OverviewScreen({
           {/* Pipeline status pill */}
           {jobId && (
             <div style={{
-              marginTop: 24, padding: 16, background: var(--bg-elevated),
+              marginTop: 24, padding: 16, background: 'var(--bg-elevated)',
               border: '1px solid var(--border-subtle)', borderRadius: 12,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -92,7 +92,7 @@ export default function OverviewScreen({
                 </button>
                 <input
                   type="file"
-                  accept=".mp4,.avi,.mov,.mkv,.json"
+                  accept=".mp4,.avi,.mov,.mkv"
                   onChange={(e) => {
                     const files = e.target.files;
                     if (files.length > 0) {
@@ -102,7 +102,7 @@ export default function OverviewScreen({
                       // For now, just trigger upload with both files if available
                       if (videoFile.name.endsWith('.mp4') || videoFile.name.endsWith('.avi') || videoFile.name.endsWith('.mov') || videoFile.name.endsWith('.mkv')) {
                         // Would need to handle meta file selection too
-                        alert(`Selected: ${videoFile.name}`);
+                        onUpload?.(videoFile, null);
                       }
                     }
                   }}
@@ -120,7 +120,7 @@ export default function OverviewScreen({
 
           {/* When job exists - show actions */}
           {jobId && (
-            <div style={{ marginTop: 24, padding: 20, background: var(--bg-elevated), borderRadius: 12, border: '1px solid var(--border-subtle)' }}>
+            <div style={{ marginTop: 24, padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, border: '1px solid var(--border-subtle)' }}>
               <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
                 {pipelineStatus !== 'running' && (
                   <button
@@ -177,7 +177,7 @@ export default function OverviewScreen({
                       key={job.job_id}
                       style={{
                         padding: '8px 12px',
-                        background: var(--bg-tertiary),
+                        background: 'var(--bg-tertiary)',
                         borderRadius: 8,
                         marginBottom: 6,
                         cursor: 'pointer',
@@ -236,7 +236,6 @@ export default function OverviewScreen({
                           : status === 'failed'
                             ? 'rgba(255, 93, 103, 0.12)'
                             : 'var(--border-subtle)',
-                      },
                     }}
                   >
                     <span
@@ -250,7 +249,8 @@ export default function OverviewScreen({
                             : status === 'failed'
                               ? '#FF5D67'
                               : 'var(--border-subtle)',
-                    />}
+                      }}
+                    />
                     <span style={{ fontSize: 10, color: 'var(--text-caption)' }}>{stage.name}</span>
                   </div>
                 );
@@ -272,7 +272,7 @@ export default function OverviewScreen({
               <div style={{
                 padding: 12, background: 'rgba(255, 93, 103, 0.1)', borderRadius: 8, marginTop: 12,
               }}>
-                <div style={{ fontSize: 11, color: var(--critical), marginBottom: 4 }}>✗ Pipeline Failed</div>
+                <div style={{ fontSize: 11, color: 'var(--critical)', marginBottom: 4 }}>✗ Pipeline Failed</div>
                 <div style={{ fontSize: 11, color: 'var(--text-caption)' }}>
                   Review errors and retry or start a new upload
                 </div>
@@ -283,13 +283,13 @@ export default function OverviewScreen({
 
         {/* ─── Anomaly Summary & Quick Actions ────────────────────────────── */}
         {anomalies.length > 0 || jobId && pipelineCompleted && (
-          <div style={{ marginTop: 24, padding: 20, background: var(--bg-elevated), borderRadius: 12, border: '1px solid var(--border-subtle)' }}>
+          <div style={{ marginTop: 24, padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, border: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text-caption)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   Anomaly Summary
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: anomalyCount > 0 ? var(--accent-primary) : var(--text-caption) }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: anomalyCount > 0 ? 'var(--accent-primary)' : 'var(--text-caption)' }}>
                   {anomalyCount} {anomalyCount === 1 ? 'finding' : 'findings'}
                 </div>
               </div>
@@ -316,20 +316,21 @@ export default function OverviewScreen({
                       style={{
                         padding: '6px 10px',
                         marginBottom: 4,
-                        background: selectedAnomaly === i ? 'rgba(66, 217, 255, 0.18)' : var(--bg-tertiary),
+                        background: selectedAnomaly === i ? 'rgba(66, 217, 255, 0.18)' : 'var(--bg-tertiary)',
                         borderRadius: 6,
                         cursor: 'pointer',
                         transition: 'background var(--transition-fast)',
                         fontSize: 12,
                       }}
                       onMouseOver={(e) => e.currentTarget.style.background = 'rgba(66, 217, 255, 0.08)'}
-                      onMouseOut={(e) => e.currentTarget.style.background = selectedAnomaly === i ? 'rgba(66, 217, 255, 0.18)' : var(--bg-tertiary)}
+                      onMouseOut={(e) => e.currentTarget.style.background = selectedAnomaly === i ? 'rgba(66, 217, 255, 0.18)' : 'var(--bg-tertiary)'}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <div
                           style={{
                             width: 6, height: 6, borderRadius: 50,
-                          background: severityColor }
+                            background: severityColor,
+                          }}
                         />
                         <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{a.title || a.id || `Anomaly ${i + 1}`}</span>
                         <span style={{ fontSize: 10, color: 'var(--text-caption)' }}>{severity} severity</span>

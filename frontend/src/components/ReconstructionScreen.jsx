@@ -22,6 +22,9 @@ export default function ReconstructionScreen({
   onStartPipeline,
   onDisplayModeChange,
   onPointSizeChange,
+  pointSize = 2.5,
+  measureMode = false,
+  measurePoints = [],
   toggleMeasure,
   applyScale,
   numPoints,
@@ -71,10 +74,10 @@ export default function ReconstructionScreen({
               min="0.5"
               max="8"
               step="0.5"
-              value={onPointSizeChange ? onPointSizeChange(2.5) : 2.5}
+              value={pointSize}
               onChange={(e) => onPointSizeChange?.(parseFloat(e.target.value))}
             />
-            <span className="slider-group__value">{2.5}</span>
+            <span className="slider-group__value">{pointSize}</span>
           </div>
           <button
             className="toolbar-btn"
@@ -108,11 +111,11 @@ export default function ReconstructionScreen({
             anomalies={anomalies}
             selectedAnomaly={selectedAnomaly}
             onSelectAnomaly={onSelectAnomaly}
-            pointSize={onPointSizeChange ? onPointSizeChange(2.5) : 2.5}
+            pointSize={pointSize}
             displayMode={displayMode}
             onDisplayModeChange={onDisplayModeChange}
-            measureMode={toggleMeasure ? true : false}
-            measurePoints={[]}
+            measureMode={measureMode}
+            measurePoints={measurePoints}
             onMeasureClick={onMeasureClick}
             showTrajectory={showTrajectory}
             showAnomalies={showAnomalies}
@@ -148,7 +151,7 @@ export default function ReconstructionScreen({
               style={{
                 marginTop: 20,
                 padding: 12,
-                background: var(--bg-elevated),
+                background: 'var(--bg-elevated)',
                 border: '1px solid var(--border-subtle)',
                 borderRadius: 8,
               }}
@@ -192,7 +195,7 @@ export default function ReconstructionScreen({
         </div>
       </div>
 
-      {/* ─── Bottom Stats / Measure Bar ──────────────────────────────────── */
+      {/* ─── Bottom Stats / Measure Bar ──────────────────────────────────── */}
       <div className="reconstruction-stats">
         <div className="stat-item">
           📐 Points: <span className="stat-item__value">{numPoints.toLocaleString()}</span>

@@ -176,11 +176,11 @@ function AnomalyMarkers({ anomalies, selectedIndex, onSelect, visible = true }) 
 
 /* ─── Measurement Line ───────────────────────────────────────────────── */
 function MeasurementLine({ points, visible }) {
-  if (!visible || points.length < 2) return null;
   const geometry = useMemo(() => {
     const pts = points.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
     return new THREE.BufferGeometry().setFromPoints(pts);
   }, [points]);
+  if (!visible || points.length < 2) return null;
 
   return (
     <group>
