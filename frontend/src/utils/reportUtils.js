@@ -2,29 +2,23 @@
      Generates download links for inspection reports.
   -------------------------------------------------------------------------- */
 
-export function downloadLink(jobId, report) {
-  // Try to get the pipeline report from the backend
-  try {
-    const url = `/api/pipeline/results/${jobId}`;
-    fetch(url)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.anomaly_report) {
-          // Could create a blob and trigger download
-          // For now, return a data URL if report data is available
-          if (data.anomaly_report && typeof data.anomaly_report === 'object') {
-            const blob = new Blob([JSON.stringify(data.anomaly_report, null, 2)], {
-              type: 'application/json',
-            });
-            return URL.createObjectURL(blob);
-          }
-        }
-        return null;
-      })
-      .catch(() => null);
-  } catch (e) {
-    console.error('Report download failed:', e);
-    return null;
+import { API_BASE } from './api';
+
+export async function downloadLink(jobId) {
+  if (!jobId) throw new Error('Select a job before downloading its report.');
+
+  // The results endpoint lists artifacts; it does not embed the report JSON.
+  const response = await fetch(
+    `${API_BASE}/api/viewer/files/${encodeURIComponent(jobId)}/anomaly_report.json`,
+  );
+  if (!response.ok) {
+    throw new Error(`Report download failed (HTTP ${response.status}).`);
   }
-  return null;
+  const report = await response.json();
+  if (!report || typeof report !== 'object' || !Array.isArray(report.anomalies)) {
+    throw new Error('The server did not return a valid anomaly report.');
+  }
+  return URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {
+    type: 'application/json',
+  }));
 }

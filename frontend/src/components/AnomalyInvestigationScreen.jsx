@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import Viewer3D from './Viewer3D';
 import AnomalyPanel from './AnomalyPanel';
+import { API_BASE } from '../utils/api';
 
 /* ─── Anomaly Investigation Screen ───────────────────────────────────────
      Focused workspace for examining detected anomalies.
@@ -18,35 +19,32 @@ export default function AnomalyInvestigationScreen({
   onDisplayModeChange,
   onPointSizeChange,
 }) {
-  const [focusedAnomaly, setFocusedAnomaly] = useState(null);
+  const focusedAnomaly = anomalies[selectedAnomaly] || null;
   const [viewMode, setViewMode] = useState('3d'); // '3d' | 'evidence' | 'details'
 
   // Handle anomaly selection
   const handleAnomalySelect = useCallback((index) => {
-    setSelectedAnomaly(index);
-    setFocusedAnomaly(anomalies[index]);
+    onSelectAnomaly?.(index);
     setViewMode('details');
 
     // Highlight in 3D viewer - the Viewer3D component handles this via onSelectAnomaly
     // and the selected anomaly is already passed down
-  }, [anomalies]);
+  }, [onSelectAnomaly]);
 
   // Navigate between findings
   const nextFinding = useCallback(() => {
     if (!focusedAnomaly || anomalies.length === 0) return;
     const currentIndex = anomalies.indexOf(focusedAnomaly);
     const nextIndex = (currentIndex + 1) % anomalies.length;
-    setSelectedAnomaly(nextIndex);
-    setFocusedAnomaly(anomalies[nextIndex]);
-  }, [anomalies, focusedAnomaly]);
+    onSelectAnomaly?.(nextIndex);
+  }, [anomalies, focusedAnomaly, onSelectAnomaly]);
 
   const prevFinding = useCallback(() => {
     if (!focusedAnomaly || anomalies.length === 0) return;
     const currentIndex = anomalies.indexOf(focusedAnomaly);
     const prevIndex = (currentIndex - 1 + anomalies.length) % anomalies.length;
-    setSelectedAnomaly(prevIndex);
-    setFocusedAnomaly(anomalies[prevIndex]);
-  }, [anomalies, focusedAnomaly]);
+    onSelectAnomaly?.(prevIndex);
+  }, [anomalies, focusedAnomaly, onSelectAnomaly]);
 
   // Determine which view to render based on viewMode
   let investigationView;
@@ -90,7 +88,7 @@ export default function AnomalyInvestigationScreen({
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-primary)', display: 'flex', gap: 8, alignItems: 'center' }}>
                     {focusedAnomaly.visual_assessment.label !== 'none' && (
-                      <span style={{ color: var(--critical), fontWeight: 500 }}>
+                      <span style={{ color: 'var(--critical)', fontWeight: 500 }}>
                         {focusedAnomaly.visual_assessment.label}
                       </span>
                     )}
@@ -109,29 +107,30 @@ export default function AnomalyInvestigationScreen({
               )}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 12 }}>
                 {focusedAnomaly.supporting_frames && focusedAnomaly.supporting_frames.length > 0 ? (
-                  {focusedAnomaly.supporting_frames.slice(0, 6).map((f, i) => {
+                  focusedAnomaly.supporting_frames.slice(0, 6).map((f, i) => {
                     const cropPath = f.crop_path;
                     return (
                       <div
                         key={i}
                         style={{
                           padding: 8,
-                          background: var(--bg-tertiary),
+                          background: 'var(--bg-tertiary)',
                           borderRadius: 6,
                           textAlign: 'center',
                           border: '1px solid var(--border-subtle)',
                         }}
                       >
-                        {cropPath && Path.exists ? (
+                        {cropPath ? (
                           <img
-                            src: {cropPath}
+                            src={`${API_BASE}/api/viewer/files/${encodeURIComponent(jobId)}/${cropPath.split('/').map(encodeURIComponent).join('/')}`}
+                            alt={`Evidence crop from frame ${f.frame_index}`}
                             style={{ width: 120, height: 80, objectFit: 'cover', borderRadius: 4 }}
                           />
                         ) : (
                           <div
                             style={{
                               width: 120, height: 80,
-                              background: var(--bg-secondary),
+                              background: 'var(--bg-secondary)',
                               borderRadius: 4,
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               color: '#4A5F79', fontSize: 10,
@@ -145,7 +144,7 @@ export default function AnomalyInvestigationScreen({
                         </div>
                       </div>
                     );
-                  })}
+                  })
                 ) : (
                   <div style={{ padding: 12, textAlign: 'center', color: '#4A5F79' }}>
                     <div style={{ fontSize: 16, opacity: 0.5, marginBottom: 8 }}>📷</div>
@@ -155,8 +154,10 @@ export default function AnomalyInvestigationScreen({
               </div>
             </div>
           </div>
+        </div>
+      </div>
         );
-  } else {
+  } else if (focusedAnomaly) {
     investigationView = (
       <div className="anomaly-details-panel">
         <div style={{ padding: 20, background: '#1A2636', borderRadius: 12, marginBottom: 20 }}>
@@ -200,7 +201,7 @@ export default function AnomalyInvestigationScreen({
                     width: 8, height: 8, borderRadius: 50,
                     background: { low: '#6DD5FA', medium: '#FFB547', high: '#FF5D67' }[focusedAnomaly.severity] || '#6DD5FA',
                   }}
-                /></div>
+                />
                 <span style={{ color: 'var(--text-primary)' }}>{focusedAnomaly.severity || 'low'}</span>
               </div>
             </div>
@@ -217,7 +218,7 @@ export default function AnomalyInvestigationScreen({
           </div>
         </div>
 
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-subtle) }}>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
           <div style={{ fontSize: 10, color: '#4A5F79', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
             Assessment Description
           </div>
@@ -227,8 +228,8 @@ export default function AnomalyInvestigationScreen({
         </div>
 
         {focusedAnomaly.position_enu && (
-          <div style={{ marginTop: 12, padding: 10, background: var(--bg-tertiary), borderRadius: 6, fontSize: 11 }}>
-            <div style={{ fontSize: 10, color: '#4A5F79', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }>3D Location (ENU)</div>
+          <div style={{ marginTop: 12, padding: 10, background: 'var(--bg-tertiary)', borderRadius: 6, fontSize: 11 }}>
+            <div style={{ fontSize: 10, color: '#4A5F79', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>3D Location (ENU)</div>
             <div style={{ color: 'var(--text-primary)' }}>
               {focusedAnomaly.position_enu.map((c, i) => `${['x', 'y', 'z'][i]}: ${c.toFixed(2)}`).join('<br />')}
             </div>
@@ -236,8 +237,8 @@ export default function AnomalyInvestigationScreen({
         )}
 
         {focusedAnomaly.position_gps && (
-          <div style={{ marginTop: 12, padding: 10, background: var(--bg-tertiary), borderRadius: 6, fontSize: 11 }}>
-            <div style={{ fontSize: 10, color: '#4A5F79', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }>Geolocation</div>
+          <div style={{ marginTop: 12, padding: 10, background: 'var(--bg-tertiary)', borderRadius: 6, fontSize: 11 }}>
+            <div style={{ fontSize: 10, color: '#4A5F79', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Geolocation</div>
             <div style={{ color: 'var(--text-primary)' }}>
               {`${focusedAnomaly.position_gps.lat.toFixed(4)}°, ${focusedAnomaly.position_gps.lon.toFixed(4)}°`}
             </div>
@@ -258,7 +259,7 @@ export default function AnomalyInvestigationScreen({
           </div>
         )}
 
-        {!focusedAnomaly.visual_assessment || focusedAnomaly.visual_assessment.label === 'none' && (
+        {(!focusedAnomaly.visual_assessment || focusedAnomaly.visual_assessment.label === 'none') && (
           <div style={{ marginTop: 12, padding: 8, background: 'rgba(66, 217, 255, 0.08)', borderRadius: 6, fontSize: 10, color: '#628BFF' }}>
             <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
               ⚠ Important Note
@@ -271,6 +272,8 @@ export default function AnomalyInvestigationScreen({
         )}
       </div>
     );
+  } else {
+    investigationView = <p>Select a finding to inspect its details and evidence.</p>;
   }
 
   return (
@@ -292,7 +295,7 @@ export default function AnomalyInvestigationScreen({
           </span>
           <button
             className="btn btn--sm btn--secondary"
-            onClick={handleAnomalySelect}
+            onClick={() => onSelectAnomaly?.(null)}
             title="Deselect anomaly"
             style={{ padding: '4px 8px', fontSize: 11, marginLeft: 8 }}
           >
@@ -303,6 +306,13 @@ export default function AnomalyInvestigationScreen({
 
       {/* ─── Main Content Area ──────────────────────────────────────────── */}
       <div className="investigation-main">
+        <AnomalyPanel anomalies={anomalies} selectedIndex={selectedAnomaly} onSelect={handleAnomalySelect} />
+        {focusedAnomaly && (
+          <div>
+            <button className="btn btn--secondary" onClick={() => setViewMode('details')}>Finding Details</button>
+            <button className="btn btn--secondary" onClick={() => setViewMode('evidence')}>Evidence Frames</button>
+          </div>
+        )}
         {investigationView}
       </div>
     </div>

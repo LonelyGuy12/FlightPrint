@@ -474,6 +474,9 @@ export default function App() {
                 onStartPipeline={handleStartPipeline}
                 onDisplayModeChange={setDisplayMode}
                 onPointSizeChange={setPointSize}
+                pointSize={pointSize}
+                measureMode={measureMode}
+                measurePoints={measurePoints}
                 onToggleTrajectory={setShowTrajectory}
                 onToggleAnomalies={setShowAnomalies}
                 onMeasureClick={handleMeasureClick}

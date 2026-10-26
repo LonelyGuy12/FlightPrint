@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { downloadLink } from '../utils/reportUtils';
+import { getSceneData } from '../utils/api';
 
 /* ─── Evidence & Reports Screen ───────────────────────────────────────────
      Professional inspection-report experience using actual anomaly report and
@@ -21,37 +22,57 @@ export default function EvidenceReportsScreen({
   const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const [downloadError, setDownloadError] = useState('');
+  const downloadInProgress = useRef(false);
 
   // Load report data from backend
   useEffect(() => {
+    let cancelled = false;
+    setReport(null);
+    setReportError('');
+    setDownloadError('');
+    setReportLoading(false);
     if (!jobId) return;
     const loadReport = async () => {
       setReportLoading(true);
       try {
-        const scene = await fetch('/api/viewer/scene/' + jobId).then((r) => r.json());
-        setReport(scene.report || scene);
+        const scene = await getSceneData(jobId);
+        if (!cancelled && scene.report) {
+          setReport({ ...scene.report, assets: scene.assets || {} });
+        }
       } catch (err) {
-        console.error('Failed to load report:', err);
+        if (!cancelled) setReportError('Unable to load this job’s report. Check the backend connection.');
       } finally {
-        setReportLoading(false);
+        if (!cancelled) setReportLoading(false);
       }
     };
     loadReport();
-  }, [jobId]);
+    return () => { cancelled = true; };
+  }, [jobId, pipelineStatus]);
 
   // Generate download link for report
-  const generateDownload = useCallback(() => {
-    if (!report || exporting) return;
+  const generateDownload = useCallback(async () => {
+    if (!report || !jobId || downloadInProgress.current) return;
+    downloadInProgress.current = true;
     setExporting(true);
-    const url = downloadLink(jobId, report);
-    if (url) {
+    setDownloadError('');
+    try {
+      const url = await downloadLink(jobId);
       const a = document.createElement('a');
       a.href = url;
       a.download = `flightprint-report-${jobId}.json`;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      a.remove();
+      // Let the browser start consuming the blob before releasing it.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setDownloadError(err.message || 'Unable to download this job’s report.');
+    } finally {
+      downloadInProgress.current = false;
+      setExporting(false);
     }
-    setExporting(false);
   }, [jobId, report]);
 
   // No report available
@@ -59,16 +80,19 @@ export default function EvidenceReportsScreen({
     return (
       <div className="evidence-reports-screen">
         <div style={{
-          padding: 60px 40px, textAlign: 'center',
+          padding: '60px 40px', textAlign: 'center',
         }}>
           <div style={{ fontSize: 48, opacity: 0.3, marginBottom: 16 }}>📄</div>
-          <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>No Report Available</h2>
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>
+            {reportLoading ? 'Loading Report' : reportError ? 'Report Unavailable' : 'No Report Available'}
+          </h2>
           <p style={{ marginBottom: 24, fontSize: 14 }}>
-            Pipeline has not been completed yet. Run the full pipeline to generate an inspection report.
+            {reportLoading ? 'Loading this job’s report…' : reportError || 'Run the pipeline to generate an inspection report.'}
           </p>
           <button
             className="btn btn--primary"
             onClick={onStartPipeline}
+            disabled={!jobId || reportLoading || !!reportError}
             style={{ marginBottom: 12 }}
           >
             ▶ Start Pipeline
@@ -101,6 +125,7 @@ export default function EvidenceReportsScreen({
           <button
             className="btn btn--sm btn--secondary"
             onClick={generateDownload}
+            disabled={!report || reportLoading || exporting}
             title="Download Report"
             style={{ padding: '6px 12px', fontSize: 11 }}
           >
@@ -109,6 +134,7 @@ export default function EvidenceReportsScreen({
           {exporting && (
             <span style={{ fontSize: 11, color: 'var(--accent-primary)' }}>Generating…</span>
           )}
+          {downloadError && <p role="alert">{downloadError}</p>}
         </div>
       </div>
 
@@ -125,26 +151,26 @@ export default function EvidenceReportsScreen({
         {/* Mission & Reconstruction Metadata ───────────────────────────── */}
         {report && report.video && (
           <div className="report-metadata" style={{
-            padding: 20, background: var(--bg-elevated), borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
+            padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
           }}>
             <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               Mission & Reconstruction Metadata
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }>Job ID</div>
+                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Job ID</div>
                 <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{jobId}</div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }>Reconstruction Mode</div>
+                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Reconstruction Mode</div>
                 <div style={{ fontSize: 13, color: 'var(--accent-primary)' }}>{reconstructionMode || '—'}</div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }>Scale Status</div>
+                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Scale Status</div>
                 <div style={{ fontSize: 13, color: scaleStatus === 'metric_georeferenced' ? '#6DD5FA' : scaleStatus === 'metric_approximate' ? '#FFB547' : 'var(--text-caption)' }}>{scaleStatus || '—'}</div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }>Frames Processed</div>
+                <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Frames Processed</div>
                 <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{report.num_frames || 0}</div>
               </div>
             </div>
@@ -154,28 +180,28 @@ export default function EvidenceReportsScreen({
         {/* 3D Reconstruction Preview ─────────────────────────────────────── */}
         {report && report.assets && Object.keys(report.assets).length > 0 && (
           <div className="report-preview" style={{
-            padding: 20, background: var(--bg-elevated), borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
+            padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
           }}>
             <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               3D Reconstruction Preview
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
-              {report.assets.sparse_cloud_ply && (
+              {report.assets['sparse_cloud.ply'] && (
                 <div>
                   <div style={{ fontSize: 10, color: 'var(--text-caption)', marginBottom: 4 }}>Sparse Cloud</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{Object.keys(report.assets.sparse_cloud_ply).length > 0 ? 'Available' : '—'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>Available</div>
                 </div>
               )}
-              {report.assets.mesh_ply && (
+              {report.assets['mesh.ply'] && (
                 <div>
-                  <div style={{ fontSize: 10, color: 'var(--text-caption)', marginBottom: 4 }}>Textured Mesh</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{Object.keys(report.assets.mesh_ply).length > 0 ? 'Available' : '—'}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-caption)', marginBottom: 4 }}>Mesh</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>Available</div>
                 </div>
               )}
-              {report.assets.dense_cloud_ply && (
+              {report.assets['dense_cloud.ply'] && (
                 <div>
                   <div style={{ fontSize: 10, color: 'var(--text-caption)', marginBottom: 4 }}>Dense Cloud</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{Object.keys(report.assets.dense_cloud_ply).length > 0 ? 'Available' : '—'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>Available</div>
                 </div>
               )}
             </div>
@@ -185,7 +211,7 @@ export default function EvidenceReportsScreen({
         {/* Finding Categories & Severity Distribution ─────────────────────── */}
         {anomalies && anomalies.length > 0 && (
           <div className="report-findings" style={{
-            padding: 20, background: var(--bg-elevated), borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
+            padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
           }}>
             <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               Finding Categories & Severity
@@ -218,7 +244,7 @@ export default function EvidenceReportsScreen({
         {/* Individual Findings with Supporting Explanations ────────────────── */}
         {anomalies && anomalies.length > 0 && (
           <div className="report-individual-findings" style={{
-            padding: 20, background: var(--bg-elevated), borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
+            padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
           }}>
             <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               Individual Findings
@@ -236,7 +262,7 @@ export default function EvidenceReportsScreen({
                     style={{
                       padding: '10px 12px',
                       marginBottom: 8,
-                      background: var(--bg-tertiary),
+                      background: 'var(--bg-tertiary)',
                       borderRadius: 8,
                       borderLeft: `3px solid ${severityColor}`,
                       cursor: 'pointer',
@@ -274,7 +300,7 @@ export default function EvidenceReportsScreen({
 
                     {/* Visual assessment */}
                     {a.visual_assessment && a.visual_assessment.label !== 'none' && (
-                      <div style={{ fontSize: 10, color: var(--critical), marginTop: 4, fontStyle: 'italic' }}>
+                      <div style={{ fontSize: 10, color: 'var(--critical)', marginTop: 4, fontStyle: 'italic' }}>
                         AI: {a.visual_assessment.label}
                       </div>
                     )}
@@ -299,7 +325,7 @@ export default function EvidenceReportsScreen({
         {/* Pipeline Completion Summary ────────────────────────────────────── */}
         {pipelineStatus === 'completed' && (
           <div className="report-summary" style={{
-            padding: 20, background: var(--bg-elevated), borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
+            padding: 20, background: 'var(--bg-elevated)', borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
           }}>
             <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               Pipeline Completion Summary
@@ -307,7 +333,7 @@ export default function EvidenceReportsScreen({
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500 }}>Stages Completed</div>
-                <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{ Math.round(Object.values(stageStatuses).filter(s => s.status === 'completed').length / Object.keys(stageStatuses).length * 100) }%</div>
+                <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{Object.keys(stageStatuses || {}).length ? `${Math.round(Object.values(stageStatuses).filter(s => s.status === 'completed').length / Object.keys(stageStatuses).length * 100)}%` : '—'}</div>
               </div>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500 }}>Processing Mode</div>
@@ -316,7 +342,7 @@ export default function EvidenceReportsScreen({
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500 }}>Data Availability</div>
                 <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-                  {report && report.has_mesh ? 'Mesh + Cloud' : report && report.has_anomalies ? 'Anomalies Only' : 'Partial'}
+                  {report?.assets?.['mesh.ply'] ? 'Mesh available' : report?.assets?.['sparse_cloud.ply'] || report?.assets?.['dense_cloud.ply'] ? 'Point cloud available' : 'No 3D asset available'}
                 </div>
               </div>
             </div>
@@ -326,14 +352,14 @@ export default function EvidenceReportsScreen({
         {/* Limitations & Review Status ─────────────────────────────────────── */}
         {pipelineStatus === 'completed' && (
           <div className="report-limitations" style={{
-            padding: 20, background: var(--bg-tertiary), borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
+            padding: 20, background: 'var(--bg-tertiary)', borderRadius: 12, marginBottom: 24, border: '1px solid var(--border-subtle)'
           }}>
             <div style={{ fontSize: 11, color: 'var(--text-caption)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
               Limitations & Review Status
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               <div style={{ marginBottom: 8 }}>
-                <strong>AI-Generated Interpretations:</strong> Visual assessments are derived from Amazon Bedrock Nova Pro analysis of evidence crops and should be verified by a human operator. Confidence scores reflect model certainty, not physical confirmation.
+                <strong>Finding Review:</strong> Findings are based on the analysis enabled for this job. Evidence-based confidence is a heuristic score, not proof of damage. An optional visual assessment is only available when it is present in the job’s results.
               </div>
               <div style={{ marginBottom: 8 }}>
                 <strong>Georeferencing:</strong> Absolute GPS coordinates are only available when GPS/IMU metadata was provided during upload. In vision-only mode, all positions are relative to the reconstruction frame.
